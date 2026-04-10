@@ -1,11 +1,78 @@
-import { Lock, Mail, Gamepad2 } from "lucide-react";
+"use client";
+
+import { Lock, Mail, Gamepad2, User } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { signIn } from "next-auth/react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export default function LoginPage() {
+  const [isLogin, setIsLogin] = useState(true);
+  const router = useRouter();
+
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg("");
+    setLoading(true);
+
+    try {
+      if (!isLogin) {
+        // Register User
+        const res = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, email, password }),
+        });
+        
+        const data = await res.json();
+        
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to register");
+        }
+        
+        // Auto sign in after register
+        const signInRes = await signIn("credentials", {
+          email,
+          password,
+          redirect: false,
+        });
+
+        if (signInRes?.error) {
+          throw new Error(signInRes.error);
+        }
+        
+        router.push("/dashboard");
+      } else {
+        // Login User
+        const res = await signIn("credentials", {
+          email,
+          password,
+          redirect: false,
+        });
+
+        if (res?.error) {
+          throw new Error(res.error);
+        }
+
+        router.push("/dashboard");
+      }
+    } catch (error: any) {
+      setErrorMsg(error.message || "An error occurred");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex items-center justify-center p-4 md:p-8 bg-background relative overflow-hidden">
       {/* Optional: Add a subtle patterned background or gradient here if you want it to look more like the original html's body background */}
@@ -44,12 +111,40 @@ export default function LoginPage() {
               <span className="text-2xl font-black text-primary tracking-tighter">Playroom</span>
             </div>
 
-            <div className="mb-10">
-              <h2 className="text-3xl font-extrabold text-foreground mb-2">Welcome Back!</h2>
-              <p className="text-muted-foreground font-medium">Please enter your details to sign in.</p>
+            <div className="mb-10 transition-all duration-300">
+              <h2 className="text-3xl font-extrabold text-foreground mb-2">
+                {isLogin ? "Welcome Back!" : "Create an Account"}
+              </h2>
+              <p className="text-muted-foreground font-medium">
+                {isLogin ? "Please enter your details to sign in." : "Please fill in your details to get started."}
+              </p>
             </div>
 
-            <form className="space-y-6">
+            {errorMsg && (
+              <div className="mb-6 p-4 bg-destructive/15 text-destructive rounded-lg text-sm font-bold animate-in fade-in slide-in-from-top-2">
+                {errorMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="space-y-6">
+              {!isLogin && (
+                <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <Label htmlFor="name" className="text-sm font-bold ml-1">Name</Label>
+                  <div className="relative">
+                    <User className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground w-5 h-5" />
+                    <Input 
+                      id="name" 
+                      type="text" 
+                      placeholder="John Doe" 
+                      required={!isLogin}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label htmlFor="email" className="text-sm font-bold ml-1">Email</Label>
                 <div className="relative">
@@ -58,6 +153,9 @@ export default function LoginPage() {
                     id="email" 
                     type="email" 
                     placeholder="name@example.com" 
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
                     className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
                   />
                 </div>
@@ -66,9 +164,11 @@ export default function LoginPage() {
               <div className="space-y-2">
                 <div className="flex justify-between items-center px-1">
                   <Label htmlFor="password" className="text-sm font-bold">Password</Label>
-                  <Link href="#" className="text-sm font-bold text-primary hover:text-primary/80 transition-colors">
-                    Forgot Password?
-                  </Link>
+                  {isLogin && (
+                    <Link href="#" className="text-sm font-bold text-primary hover:text-primary/80 transition-colors">
+                      Forgot Password?
+                    </Link>
+                  )}
                 </div>
                 <div className="relative">
                   <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground w-5 h-5" />
@@ -76,13 +176,16 @@ export default function LoginPage() {
                     id="password" 
                     type="password" 
                     placeholder="••••••••" 
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
                     className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
                   />
                 </div>
               </div>
 
-              <Button type="submit" className="w-full py-6 text-lg font-bold rounded-full shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all duration-200">
-                Sign In
+              <Button disabled={loading} type="submit" className="w-full py-6 text-lg font-bold rounded-full shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all duration-200">
+                {loading ? "Please wait..." : isLogin ? "Sign In" : "Sign Up"}
               </Button>
             </form>
 
@@ -96,11 +199,11 @@ export default function LoginPage() {
             </div>
 
             <div className="grid grid-cols-2 gap-4">
-              <Button variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
+              <Button type="button" variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
                 <img alt="Google" className="w-5 h-5 mr-2" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA3viruLjnhn9Qgtn5ymfNaJ1xC9KG84w6hxBpAf5XBUKSZ1DaW6RQRNGSyV_sSCbL4MolHMM-HauunmVeBYan1GYr7BjUku2-NSfqJfDeHzLDDuCGjz_1JFmQp4cRsVElZu5ix2OStnvz8dUVIQHtTIWI0s6bFYn26b6sYWwUjj6X4SWtPVzFG4aNjAPydUZZ5_Gf4LyXSFe0sz5ATIAgqDZ_zUm9xissGR0AmdMieiBwMW_Ni7s347Wj-l8lGEY8rcEkyIDVlIU6i"/>
                 Google
               </Button>
-              <Button variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
+              <Button type="button" variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
                 <svg className="w-5 h-5 mr-2 text-[#1877F2]" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"></path>
                 </svg>
@@ -110,10 +213,17 @@ export default function LoginPage() {
 
             <div className="mt-12 text-center">
               <p className="text-muted-foreground font-medium">
-                Don't have an account?{" "}
-                <Link href="#" className="text-primary font-bold hover:underline decoration-2 underline-offset-4 transition-all">
-                  Sign Up
-                </Link>
+                {isLogin ? "Don't have an account? " : "Already have an account? "}
+                <button 
+                  type="button"
+                  onClick={() => {
+                    setIsLogin(!isLogin);
+                    setErrorMsg("");
+                  }}
+                  className="text-primary font-bold hover:underline decoration-2 underline-offset-4 transition-all"
+                >
+                  {isLogin ? "Sign Up" : "Sign In"}
+                </button>
               </p>
             </div>
           </div>
