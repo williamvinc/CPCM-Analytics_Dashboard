@@ -6,9 +6,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 
+import Image from "next/image";
+import cpcmIlu from "@/assets/cpcm_ilu_test.png";
+
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export default function LoginPage() {
   const [isLogin, setIsLogin] = useState(true);
@@ -18,11 +22,13 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
+  const [successMsg, setSuccessMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
+    setSuccessMsg("");
     setLoading(true);
 
     try {
@@ -40,18 +46,12 @@ export default function LoginPage() {
           throw new Error(data.error || "Failed to register");
         }
         
-        // Auto sign in after register
-        const signInRes = await signIn("credentials", {
-          email,
-          password,
-          redirect: false,
-        });
-
-        if (signInRes?.error) {
-          throw new Error(signInRes.error);
-        }
-        
-        router.push("/dashboard");
+        // Show success message and switch to login view
+        setSuccessMsg("Successfully registered");
+        setIsLogin(true);
+        // Clear inputs after successful registration
+        setPassword("");
+        setName("");
       } else {
         // Login User
         const res = await signIn("credentials", {
@@ -61,13 +61,14 @@ export default function LoginPage() {
         });
 
         if (res?.error) {
-          throw new Error(res.error);
+          // NextAuth often returns "Configuration" or generic errors for credentials mismatch
+          throw new Error("Wrong credentials");
         }
 
         router.push("/dashboard");
       }
     } catch (error: any) {
-      setErrorMsg(error.message || "An error occurred");
+      setErrorMsg(error.message || "Wrong credentials");
     } finally {
       setLoading(false);
     }
@@ -84,12 +85,13 @@ export default function LoginPage() {
           <div className="absolute bottom-[-5%] right-[-5%] w-80 h-80 bg-blue-500/20 rounded-full blur-3xl opacity-50"></div>
           
           <div className="relative z-10 w-full h-full flex flex-col justify-center">
-            {/* Using arbitrary placeholder since the external image was used */}
+            {/* Illustration Image */}
             <div className="w-full flex-1 min-h-[300px] relative transition-transform duration-500 hover:scale-105 flex items-center justify-center">
-               <img
-                  alt="Playful App Illustration"
+               <Image
+                  alt="CPCM Analytics Illustration"
                   className="w-full h-full object-contain drop-shadow-2xl"
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuAV9gXnByPdCIF1YEyDVfeX-wxKhspEaMjuuUxAUXWmGK6MDtUhHOHr9Mnt8gwBtOA5CZlh4MidbvAKhPTdIaZDXUQtKLVUOMhc1mlHb6xvcgisEzyThUBYZz7E7L4gw1pxVpFk7houE8Aceg5IwSHDE6D6Qwjx25Qv4BKWuSqgbtqP-z23xACOh1YINFXp7n0bcBj4mDAC6yEve76ac3ZaYs3f60IcNsSMA17aPycMV6Io59Wi9qcKvN-mB0ZnaLAm3EXmkAsJrmbz"
+                  src={cpcmIlu}
+                  priority
                 />
             </div>
             
@@ -108,12 +110,12 @@ export default function LoginPage() {
               <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center shadow-lg shadow-primary/20">
                 <Gamepad2 className="text-primary-foreground focus:outline-none" size={24} />
               </div>
-              <span className="text-2xl font-black text-primary tracking-tighter">Playroom</span>
+              <span className="text-2xl font-black text-primary tracking-tighter">CPCM Analytics</span>
             </div>
 
             <div className="mb-10 transition-all duration-300">
               <h2 className="text-3xl font-extrabold text-foreground mb-2">
-                {isLogin ? "Welcome Back!" : "Create an Account"}
+                {isLogin ? "Hi There!" : "Create an Account"}
               </h2>
               <p className="text-muted-foreground font-medium">
                 {isLogin ? "Please enter your details to sign in." : "Please fill in your details to get started."}
@@ -123,6 +125,12 @@ export default function LoginPage() {
             {errorMsg && (
               <div className="mb-6 p-4 bg-destructive/15 text-destructive rounded-lg text-sm font-bold animate-in fade-in slide-in-from-top-2">
                 {errorMsg}
+              </div>
+            )}
+            
+            {successMsg && (
+              <div className="mb-6 p-4 bg-green-500/15 text-green-600 rounded-lg text-sm font-bold animate-in fade-in slide-in-from-top-2">
+                {successMsg}
               </div>
             )}
 
@@ -138,7 +146,10 @@ export default function LoginPage() {
                       placeholder="John Doe" 
                       required={!isLogin}
                       value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      onChange={(e) => {
+                        setName(e.target.value);
+                        setErrorMsg("");
+                      }}
                       className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
                     />
                   </div>
@@ -155,7 +166,10 @@ export default function LoginPage() {
                     placeholder="name@example.com" 
                     required
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEmail(e.target.value);
+                      setErrorMsg("");
+                    }}
                     className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
                   />
                 </div>
@@ -165,9 +179,16 @@ export default function LoginPage() {
                 <div className="flex justify-between items-center px-1">
                   <Label htmlFor="password" className="text-sm font-bold">Password</Label>
                   {isLogin && (
-                    <Link href="#" className="text-sm font-bold text-primary hover:text-primary/80 transition-colors">
-                      Forgot Password?
-                    </Link>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Link href="#" className="text-sm font-bold text-primary hover:text-primary/80 transition-colors">
+                          Forgot Password?
+                        </Link>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        <p>This feature is not available yet</p>
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                 </div>
                 <div className="relative">
@@ -178,7 +199,10 @@ export default function LoginPage() {
                     placeholder="••••••••" 
                     required
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setErrorMsg("");
+                    }}
                     className="pl-11 py-6 bg-muted/50 border-transparent rounded-lg font-medium focus-visible:ring-primary/40 focus-visible:border-primary/40 transition-all text-base"
                   />
                 </div>
@@ -219,6 +243,7 @@ export default function LoginPage() {
                   onClick={() => {
                     setIsLogin(!isLogin);
                     setErrorMsg("");
+                    setSuccessMsg("");
                   }}
                   className="text-primary font-bold hover:underline decoration-2 underline-offset-4 transition-all"
                 >
@@ -232,7 +257,7 @@ export default function LoginPage() {
 
       {/* Footer Navigation */}
       <footer className="absolute bottom-0 left-0 w-full p-6 flex flex-col md:flex-row justify-between items-center text-muted-foreground text-sm font-medium opacity-60">
-        <div className="mb-2 md:mb-0">© 2024 Playroom. All rights reserved.</div>
+        <div className="mb-2 md:mb-0">© Cow Play Cow Moo Indonesia. All rights reserved.</div>
         <div className="flex gap-6 z-20 relative">
           <Link href="#" className="hover:text-primary transition-colors">Privacy</Link>
           <Link href="#" className="hover:text-primary transition-colors">Terms</Link>
