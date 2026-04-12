@@ -7,7 +7,10 @@ import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 
 import Image from "next/image";
-import cpcmIlu from "@/assets/cpcm_ilu_test.png";
+import landingIlu from "@/assets/landing.png";
+import cowImg from "@/assets/cow.png";
+import sheepImg from "@/assets/sheep.png";
+import sheep2Img from "@/assets/sheep2.png";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,6 +19,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 
 export default function LoginPage() {
   const [isLogin, setIsLogin] = useState(true);
+  const [isSheepSmiling, setIsSheepSmiling] = useState(false);
+  const [cowSpinCount, setCowSpinCount] = useState(0);
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -85,19 +90,57 @@ export default function LoginPage() {
           <div className="absolute bottom-[-5%] right-[-5%] w-80 h-80 bg-blue-500/20 rounded-full blur-3xl opacity-50"></div>
           
           <div className="relative z-10 w-full h-full flex flex-col justify-center">
-            {/* Illustration Image */}
-            <div className="w-full flex-1 min-h-[300px] relative transition-transform duration-500 hover:scale-105 flex items-center justify-center">
-               <Image
-                  alt="CPCM Analytics Illustration"
-                  className="w-full h-full object-contain drop-shadow-2xl"
-                  src={cpcmIlu}
-                  priority
-                />
+            {/* Content Container */}
+            <div className="w-full flex flex-col items-center justify-center p-4">
+              
+              {/* Main Illustration Area with Overlaps */}
+              <div className="relative w-full max-w-[340px] mb-8">
+                
+                {/* Main Illustration */}
+                <div className="w-full h-auto drop-shadow-2xl relative z-10 transition-transform duration-500 hover:scale-105">
+                  <Image
+                      alt="CPCM Analytics Illustration"
+                      className="w-full h-auto object-contain"
+                      src={landingIlu}
+                      priority
+                    />
+                </div>
+
+                {/* Interactive Overlapping Cow */}
+                <div 
+                  className="absolute -bottom-10 -left-6 w-[120px] h-[120px] z-20 hover:scale-110 active:scale-95 transition-all duration-500 cursor-pointer"
+                  onClick={() => setCowSpinCount(prev => prev + 1)}
+                  style={{ transform: `rotate(${cowSpinCount * 360}deg)` }}
+                  title="Spin me!"
+                >
+                  <Image 
+                    src={cowImg} 
+                    alt="Cow Mascot" 
+                    className="w-full h-full object-contain drop-shadow-2xl select-none transition-transform duration-500 hover:scale-110" 
+                    priority
+                  />
+                </div>
+
+                {/* Interactive Overlapping Sheep */}
+                <div 
+                  className="absolute -bottom-4 -right-4 w-[90px] h-[90px] z-20 hover:scale-110 active:scale-95 transition-transform duration-300 cursor-pointer"
+                  onClick={() => setIsSheepSmiling(!isSheepSmiling)}
+                  title="Click me!"
+                >
+                  <Image 
+                    src={isSheepSmiling ? sheep2Img : sheepImg} 
+                    alt="Sheep Mascot" 
+                    className="w-full h-full object-contain drop-shadow-xl select-none" 
+                    priority
+                  />
+                </div>
+
+              </div>
             </div>
             
-            <div className="mt-8 text-center">
-              <h1 className="text-4xl font-black text-foreground tracking-tight">Unlock the Fun</h1>
-              <p className="text-muted-foreground mt-2 text-lg font-medium">Join thousands of friends in the ultimate playground.</p>
+            <div className="mt-12 text-center relative z-30">
+              <h1 className="text-4xl font-black text-foreground tracking-tight">New for Reporting</h1>
+              <p className="text-muted-foreground mt-2 text-lg font-medium">Our centralized dashboard for operational insights.</p>
             </div>
           </div>
         </div>
@@ -115,7 +158,7 @@ export default function LoginPage() {
 
             <div className="mb-10 transition-all duration-300">
               <h2 className="text-3xl font-extrabold text-foreground mb-2">
-                {isLogin ? "Hi There!" : "Create an Account"}
+                {isLogin ? "Hello" : "Create an Account"}
               </h2>
               <p className="text-muted-foreground font-medium">
                 {isLogin ? "Please enter your details to sign in." : "Please fill in your details to get started."}
@@ -213,29 +256,7 @@ export default function LoginPage() {
               </Button>
             </form>
 
-            <div className="relative my-10">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-border"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-4 bg-background text-muted-foreground font-bold">Or continue with</span>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <Button type="button" variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
-                <img alt="Google" className="w-5 h-5 mr-2" src="https://lh3.googleusercontent.com/aida-public/AB6AXuA3viruLjnhn9Qgtn5ymfNaJ1xC9KG84w6hxBpAf5XBUKSZ1DaW6RQRNGSyV_sSCbL4MolHMM-HauunmVeBYan1GYr7BjUku2-NSfqJfDeHzLDDuCGjz_1JFmQp4cRsVElZu5ix2OStnvz8dUVIQHtTIWI0s6bFYn26b6sYWwUjj6X4SWtPVzFG4aNjAPydUZZ5_Gf4LyXSFe0sz5ATIAgqDZ_zUm9xissGR0AmdMieiBwMW_Ni7s347Wj-l8lGEY8rcEkyIDVlIU6i"/>
-                Google
-              </Button>
-              <Button type="button" variant="outline" className="py-6 rounded-lg font-bold hover:bg-muted/50 transition-all">
-                <svg className="w-5 h-5 mr-2 text-[#1877F2]" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"></path>
-                </svg>
-                Facebook
-              </Button>
-            </div>
-
-            <div className="mt-12 text-center">
+            <div className="mt-10 text-center">
               <p className="text-muted-foreground font-medium">
                 {isLogin ? "Don't have an account? " : "Already have an account? "}
                 <button 
