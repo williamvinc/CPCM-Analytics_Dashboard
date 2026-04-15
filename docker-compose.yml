@@ -10,9 +10,8 @@ services:
     environment:
       - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
       - AUTH_TRUST_HOST=true
-      - DATABASE_URL=file:../data/prod.db
+      - DATABASE_URL=file:/app/data/prod.db
     volumes:
-      # Persist SQLite DB in /app/data (NOT /app/prisma — that would hide schema.prisma)
       - sqlite_data:/app/data
     depends_on:
       - backend
