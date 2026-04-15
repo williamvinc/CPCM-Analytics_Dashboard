@@ -21,6 +21,7 @@ export default function LoginPage() {
   const [isLogin, setIsLogin] = useState(true);
   const [isSheepSmiling, setIsSheepSmiling] = useState(false);
   const [cowSpinCount, setCowSpinCount] = useState(0);
+  const [landingBounce, setLandingBounce] = useState(false);
   const router = useRouter();
 
   const [name, setName] = useState("");
@@ -29,6 +30,11 @@ export default function LoginPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const handleLandingClick = () => {
+    setLandingBounce(true);
+    setTimeout(() => setLandingBounce(false), 600);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -97,7 +103,17 @@ export default function LoginPage() {
               <div className="relative w-full max-w-[340px] mb-8">
                 
                 {/* Main Illustration */}
-                <div className="w-full h-auto drop-shadow-2xl relative z-10 transition-transform duration-500 hover:scale-105">
+                <div 
+                  className="w-full h-auto drop-shadow-2xl relative z-10 cursor-pointer"
+                  onClick={handleLandingClick}
+                  style={{
+                    animation: landingBounce ? 'landingBounce 0.6s ease' : 'none',
+                    transition: 'transform 0.5s',
+                  }}
+                  onMouseEnter={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
+                  onMouseLeave={(e) => e.currentTarget.style.transform = 'scale(1)'}
+                  title="Click me!"
+                >
                   <Image
                       alt="CPCM Analytics Illustration"
                       className="w-full h-auto object-contain"
@@ -138,10 +154,10 @@ export default function LoginPage() {
               </div>
             </div>
             
-            <div className="mt-12 text-center relative z-30">
+            {/* <div className="mt-12 text-center relative z-30">
               <h1 className="text-4xl font-black text-foreground tracking-tight">New for Reporting</h1>
               <p className="text-muted-foreground mt-2 text-lg font-medium">Our centralized dashboard for operational insights.</p>
-            </div>
+            </div> */}
           </div>
         </div>
 
@@ -158,10 +174,10 @@ export default function LoginPage() {
 
             <div className="mb-10 transition-all duration-300">
               <h2 className="text-3xl font-extrabold text-foreground mb-2">
-                {isLogin ? "Hello" : "Create an Account"}
+                {isLogin ? "Hii" : "Create an Account"}
               </h2>
               <p className="text-muted-foreground font-medium">
-                {isLogin ? "Please enter your details to sign in." : "Please fill in your details to get started."}
+                {isLogin ? "Login first" : "Please fill in your details to get started."}
               </p>
             </div>
 

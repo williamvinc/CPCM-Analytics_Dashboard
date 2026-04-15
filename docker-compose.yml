@@ -1,0 +1,31 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Backend URL as seen from the browser (NOT internal Docker network)
+        # Change this to your server's domain/IP when deploying
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://110.239.80.161:8000}
+    ports:
+      - "3000:3000"
+    environment:
+      - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
+      - DATABASE_URL=file:./prisma/prod.db
+    volumes:
+      # Persist SQLite database across container restarts
+      - sqlite_data:/app/prisma
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:
