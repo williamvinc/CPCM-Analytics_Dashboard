@@ -3,13 +3,13 @@ set -e
 
 echo "=== CPCM Analytics Dashboard ==="
 
-# Run Prisma migrations / push schema to create tables
+# Run Prisma DB push to create/update tables
 echo "Running Prisma DB push..."
-npx prisma db push --skip-generate 2>/dev/null || echo "Prisma push completed (or already up to date)"
+node ./node_modules/prisma/build/index.js db push --skip-generate --accept-data-loss 2>&1 || echo "Warning: Prisma push had issues"
 
 # Seed initial admin user if DB is fresh
 echo "Seeding database..."
-node prisma/seed.js 2>/dev/null || echo "Seed completed (or user already exists)"
+node prisma/seed.js 2>&1 || echo "Seed completed (or user already exists)"
 
 echo "Starting server..."
 exec "$@"
