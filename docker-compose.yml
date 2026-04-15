@@ -11,7 +11,8 @@ services:
       - "3000:3000"
     environment:
       - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
-      - DATABASE_URL=file:./prisma/prod.db
+      - AUTH_TRUST_HOST=true
+      - DATABASE_URL=file:./prod.db
     volumes:
       # Persist SQLite database across container restarts
       - sqlite_data:/app/prisma
