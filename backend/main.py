@@ -254,3 +254,136 @@ async def transform_sales(file: UploadFile = File(...)):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transform/machine-rate")
+async def transform_machine_rate(file: UploadFile = File(...)):
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Only .xlsx files are supported.")
+
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents))
+
+        # Validate required columns
+        required_cols = ['Project', 'Port', 'Total ticket out', 'Total Coin Input', 'Billing Period', 'Store']
+        missing_cols = [col for col in required_cols if col not in df.columns]
+        if missing_cols:
+            raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing_cols)}")
+
+        # Rename columns
+        df = df.rename(columns={
+            'Project': 'Machine Name',
+            'Port': 'Player Side',
+        })
+
+        # Exclude 'Total' row
+        df = df[df['Store'].astype(str).str.strip().str.lower() != 'total']
+
+        # Parse numeric columns
+        df['Total ticket out'] = pd.to_numeric(df['Total ticket out'], errors='coerce').fillna(0)
+        df['Total Coin Input'] = pd.to_numeric(df['Total Coin Input'], errors='coerce').fillna(0)
+
+        # Parse billing period
+        df['Billing Period'] = pd.to_datetime(df['Billing Period'], errors='coerce')
+        df['_date_str'] = df['Billing Period'].dt.strftime('%Y-%m-%d')
+        df['_month'] = df['Billing Period'].dt.to_period('M')
+
+        # Available months for filtering
+        months = df['_month'].dropna().unique()
+        months_sorted = sorted(months)
+        available_months = [str(m) for m in months_sorted]
+
+        # Available stores for filtering
+        available_stores = sorted([str(s) for s in df['Store'].dropna().unique() if str(s).strip() != ''])
+
+        # ALL ROW DATA (for client-side filtering)
+        df_export = df.copy()
+        df_export['Billing Period'] = df_export['Billing Period'].dt.strftime('%Y-%m-%d')
+        if '_month' in df_export.columns:
+            df_export = df_export.drop(columns=['_month', '_date_str'], errors='ignore')
+        df_export = df_export.fillna("")
+        all_data = df_export.to_dict(orient='records')
+
+        # GROUP BY Machine Name + Player Side (aggregated table)
+        grouped = df.groupby(['Machine Name', 'Player Side'], as_index=False).agg({
+            'Total ticket out': 'sum',
+            'Total Coin Input': 'sum',
+        })
+        grouped = grouped.rename(columns={
+            'Total ticket out': 'Ticket Out',
+            'Total Coin Input': 'Coin In',
+        })
+        grouped['Rate'] = grouped.apply(
+            lambda r: round(r['Ticket Out'] / r['Coin In'], 4) if r['Coin In'] > 0 else 0, axis=1
+        )
+        grouped_data = grouped.to_dict(orient='records')
+
+        # METRICS (totals)
+        total_ticket_out = float(df['Total ticket out'].sum())
+        total_coin_in = float(df['Total Coin Input'].sum())
+        overall_rate = round(total_ticket_out / total_coin_in, 4) if total_coin_in > 0 else 0
+        unique_machines = int(df['Machine Name'].nunique())
+        total_records = int(len(df))
+
+        metrics = {
+            "total_ticket_out": total_ticket_out,
+            "total_coin_in": total_coin_in,
+            "overall_rate": overall_rate,
+            "unique_machines": unique_machines,
+            "total_records": total_records,
+        }
+
+        # CHART: Top machines by Ticket Out
+        top_machines = df.groupby('Machine Name', as_index=False).agg({
+            'Total ticket out': 'sum',
+            'Total Coin Input': 'sum',
+        }).sort_values('Total ticket out', ascending=False).head(15)
+        top_machines['Rate'] = top_machines.apply(
+            lambda r: round(r['Total ticket out'] / r['Total Coin Input'], 4) if r['Total Coin Input'] > 0 else 0, axis=1
+        )
+        chart_top_machines = top_machines.rename(columns={
+            'Total ticket out': 'Ticket Out',
+            'Total Coin Input': 'Coin In',
+        }).to_dict(orient='records')
+
+        # CHART: Daily trend
+        daily = df.groupby('_date_str', as_index=False).agg({
+            'Total ticket out': 'sum',
+            'Total Coin Input': 'sum',
+        }).sort_values('_date_str')
+        daily['Rate'] = daily.apply(
+            lambda r: round(r['Total ticket out'] / r['Total Coin Input'], 4) if r['Total Coin Input'] > 0 else 0, axis=1
+        )
+        daily = daily.rename(columns={
+            '_date_str': 'date',
+            'Total ticket out': 'Ticket Out',
+            'Total Coin Input': 'Coin In',
+        })
+        chart_daily = daily.to_dict(orient='records')
+
+        # Generate Excel Download
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            grouped.to_excel(writer, index=False, sheet_name='Machine_Rate_Summary')
+        file_base64 = base64.b64encode(output.getvalue()).decode('utf-8')
+
+        return {
+            "success": True,
+            "all_data": all_data,
+            "grouped_data": grouped_data,
+            "metrics": metrics,
+            "available_months": available_months,
+            "available_stores": available_stores,
+            "chart_top_machines": chart_top_machines,
+            "chart_daily": chart_daily,
+            "file_base64": file_base64,
+            "total_rows": total_records,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

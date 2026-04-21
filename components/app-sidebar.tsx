@@ -33,6 +33,10 @@ const data = {
         {
           title: "Sales Report",
           url: "/dashboard/transformation",
+        },
+        {
+          title: "Machine Rate Tracker",
+          url: "/dashboard/machine_rate_tracker",
         }
       ]
     },
