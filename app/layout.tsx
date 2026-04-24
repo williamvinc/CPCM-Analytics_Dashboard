@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "CPCM Analytics",
-  description: "CPCM Analytics is a web application that provides analytics for CPCM.",
+  title: "MooBoard",
+  description: "MooBoard is a web application that provides analytics for CPCM.",
 };
 
 export default function RootLayout({

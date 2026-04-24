@@ -265,11 +265,14 @@ async def transform_machine_rate(file: UploadFile = File(...)):
         contents = await file.read()
         df = pd.read_excel(io.BytesIO(contents))
 
-        # Validate required columns
-        required_cols = ['Project', 'Port', 'Total ticket out', 'Total Coin Input', 'Billing Period', 'Store']
+        # Validate required columns (Store is now optional)
+        required_cols = ['Project', 'Port', 'Total ticket out', 'Total Coin Input', 'Billing Period']
         missing_cols = [col for col in required_cols if col not in df.columns]
         if missing_cols:
             raise HTTPException(status_code=400, detail=f"Missing columns: {', '.join(missing_cols)}")
+
+        has_store_column = 'Store' in df.columns
+        has_game_type = 'Game Type' in df.columns
 
         # Rename columns
         df = df.rename(columns={
@@ -277,8 +280,12 @@ async def transform_machine_rate(file: UploadFile = File(...)):
             'Port': 'Player Side',
         })
 
-        # Exclude 'Total' row
-        df = df[df['Store'].astype(str).str.strip().str.lower() != 'total']
+        # Exclude 'Total' rows and blank machine names
+        if has_store_column:
+            df = df[df['Store'].astype(str).str.strip().str.lower() != 'total']
+        # Always filter out rows where Machine Name is empty or 'Total'
+        df = df[df['Machine Name'].astype(str).str.strip() != '']
+        df = df[df['Machine Name'].astype(str).str.strip().str.lower() != 'total']
 
         # Parse numeric columns
         df['Total ticket out'] = pd.to_numeric(df['Total ticket out'], errors='coerce').fillna(0)
@@ -295,7 +302,10 @@ async def transform_machine_rate(file: UploadFile = File(...)):
         available_months = [str(m) for m in months_sorted]
 
         # Available stores for filtering
-        available_stores = sorted([str(s) for s in df['Store'].dropna().unique() if str(s).strip() != ''])
+        available_stores = sorted([str(s) for s in df['Store'].dropna().unique() if str(s).strip() != '']) if has_store_column else []
+
+        # Available game types for filtering
+        available_game_types = sorted([str(g) for g in df['Game Type'].dropna().unique() if str(g).strip() != '']) if has_game_type else []
 
         # ALL ROW DATA (for client-side filtering)
         df_export = df.copy()
@@ -375,10 +385,55 @@ async def transform_machine_rate(file: UploadFile = File(...)):
             "metrics": metrics,
             "available_months": available_months,
             "available_stores": available_stores,
+            "available_game_types": available_game_types,
+            "has_store_column": has_store_column,
             "chart_top_machines": chart_top_machines,
             "chart_daily": chart_daily,
             "file_base64": file_base64,
             "total_rows": total_records,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/transform/machine-rate-card")
+async def transform_machine_rate_card(file: UploadFile = File(...)):
+    """Parse the second Excel file (no headers) with columns: Machine Name, Player Side, Ticket Leak"""
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        raise HTTPException(status_code=400, detail="Only .xlsx files are supported.")
+
+    try:
+        contents = await file.read()
+        df = pd.read_excel(io.BytesIO(contents), header=None)
+
+        # Expect exactly 3 columns
+        if len(df.columns) < 3:
+            raise HTTPException(status_code=400, detail=f"Expected at least 3 columns, got {len(df.columns)}")
+
+        # Name the first 3 columns
+        df = df.iloc[:, :3]
+        df.columns = ['Machine Name', 'Player Side', 'Ticket Leak']
+
+        # Clean data
+        df['Machine Name'] = df['Machine Name'].astype(str).str.strip()
+        df['Player Side'] = df['Player Side'].astype(str).str.strip()
+        df['Ticket Leak'] = pd.to_numeric(df['Ticket Leak'], errors='coerce').fillna(0)
+
+        # Filter out empty machine names
+        df = df[df['Machine Name'] != '']
+        df = df[df['Machine Name'].str.lower() != 'nan']
+
+        card_data = df.to_dict(orient='records')
+
+        return {
+            "success": True,
+            "card_data": card_data,
+            "total_rows": len(df),
         }
 
     except HTTPException:

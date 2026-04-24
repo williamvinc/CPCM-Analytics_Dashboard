@@ -115,7 +115,7 @@ export default function LoginPage() {
                   title="Click me!"
                 >
                   <Image
-                      alt="CPCM Analytics Illustration"
+                      alt="MooBoard Illustration"
                       className="w-full h-auto object-contain"
                       src={landingIlu}
                       priority
@@ -169,7 +169,7 @@ export default function LoginPage() {
               <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center shadow-lg shadow-primary/20">
                 <Gamepad2 className="text-primary-foreground focus:outline-none" size={24} />
               </div>
-              <span className="text-2xl font-black text-primary tracking-tighter">CPCM Analytics</span>
+              <span className="text-2xl font-black text-primary tracking-tighter">MooBoard</span>
             </div>
 
             <div className="mb-10 transition-all duration-300">

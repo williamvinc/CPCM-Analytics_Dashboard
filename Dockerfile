@@ -1,5 +1,5 @@
 # ============================================
-# CPCM Analytics Dashboard — Next.js Frontend
+# MooBoard Dashboard — Next.js Frontend
 # Multi-stage build for minimal production image
 # ============================================
 

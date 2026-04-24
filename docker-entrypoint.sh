@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "=== CPCM Analytics Dashboard ==="
+echo "=== MooBoard Dashboard ==="
 echo "DATABASE_URL: $DATABASE_URL"
 
 # Create tables using Prisma Client raw SQL (no CLI needed)

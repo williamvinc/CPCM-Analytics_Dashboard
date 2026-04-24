@@ -1,5 +1,5 @@
 # ============================================
-# CPCM Analytics Dashboard — Python FastAPI Backend
+# MooBoard Dashboard — Python FastAPI Backend
 # ============================================
 
 FROM python:3.11-slim

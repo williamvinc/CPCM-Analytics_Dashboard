@@ -1,4 +1,4 @@
-# CPCM Analytics Dashboard — Backend
+# MooBoard Dashboard — Backend
 
 FastAPI backend for data transformation services.
 

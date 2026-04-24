@@ -1,6 +1,6 @@
 # CPCM Analytics Dashboard
 
-Sales analytics dashboard built with **Next.js 16** + **FastAPI** backend for data transformation.
+Sales analytics dashboard built with Next.js 16 and a FastAPI backend for data transformation.
 
 ## Tech Stack
 
@@ -14,118 +14,108 @@ Sales analytics dashboard built with **Next.js 16** + **FastAPI** backend for da
 
 ---
 
-## 🚀 Deploy ke Server (Docker Compose)
+## Features Usage
 
-### Kebutuhan Server
+- **Machine Rate Tracker**: Upload primary Excel data containing machine inputs and ticket outputs to view analytics. Optionally upload a secondary Card/Ticket Leak Excel file using the "Ticket Machine & Card" tab to right-join data by Machine Name and evaluate the overall adjusted Rate `(Ticket Out + Ticket Leak) / Coin In`.
 
-Yang perlu diinstall di server **hanya**:
+---
 
-- **Docker** (v20+)
-- **Docker Compose** (v2+)
-- **Git**
+## Deployment (Docker Compose)
 
-### Langkah Deploy
+### Server Requirements
 
+- Docker (v20+)
+- Docker Compose (v2+)
+- Git
+
+### Deployment Steps
+
+1. Clone the repository
 ```bash
-# 1. Clone repo
 git clone https://github.com/williamvinc/CPCM-Analytics_Dashboard.git
 cd CPCM-Analytics_Dashboard
+```
 
-# 2. Buat file .env dari template
+2. Create environment variables
+```bash
 cp .env.example .env
-
-# 3. Edit .env (WAJIB)
 nano .env
+```
 
-# 4. Build & jalankan
+3. Build and run containers
+```bash
 docker compose up -d --build
+```
 
-# 5. Cek status
-docker compose ps
+4. Check logs
+```bash
 docker compose logs -f
 ```
 
-### Akses
+### Accessing the App
 
-- **Frontend**: `http://110.239.80.161:3000`
-- **Backend API**: `http://110.239.80.161:8000`
+- Frontend: `http://<SERVER_IP>:3000`
+- Backend API: `http://<SERVER_IP>:8000`
 
 ---
 
-## ⚙️ Environment Variables (.env)
+## Environment Variables (.env)
 
-| Variable | Wajib? | Deskripsi | Contoh |
+| Variable | Required | Description | Example |
 |---|---|---|---|
-| `AUTH_SECRET` | ✅ **Ya** | Secret key untuk sign JWT token NextAuth. Tanpa ini, auth tidak aman di production. | Generate: `openssl rand -base64 32` |
-| `NEXT_PUBLIC_BACKEND_URL` | ✅ **Ya** | URL backend **dari sisi browser** (bukan Docker internal). | `http://110.239.80.161:8000` |
-| `SEED_USER_EMAIL` | Opsional | Email admin awal (default: `admin@cpcm.com`) | `admin@cpcm.com` |
-| `SEED_USER_PASSWORD` | Opsional | Password admin awal (default: `admin123`) | `admin123` |
-| `SEED_USER_NAME` | Opsional | Nama admin awal (default: `Admin`) | `Admin` |
+| `AUTH_SECRET` | Yes | Secret key to sign NextAuth JWT tokens. | Generate via: `openssl rand -base64 32` |
+| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend URL accessed from the client browser. | `http://110.239.80.161:8000` |
+| `SEED_USER_EMAIL` | No | Initial admin email (default: admin@cpcm.com). | `admin@cpcm.com` |
+| `SEED_USER_PASSWORD` | No | Initial admin password (default: admin123). | `admin123` |
+| `SEED_USER_NAME` | No | Initial admin name (default: Admin). | `Admin` |
 
-### Kenapa AUTH_SECRET wajib?
-
-NextAuth menggunakan `AUTH_SECRET` untuk **menandatangani (sign) JWT token**. Jika tidak diset:
-- Di `auth.ts` ada fallback: `"super-secret-key-for-local-dev-only"` — ini **tidak aman** untuk production
-- Siapapun yang tahu key ini bisa membuat token palsu
-
-**Cara generate:**
-```bash
-openssl rand -base64 32
-```
+### Note on AUTH_SECRET
+NextAuth relies on `AUTH_SECRET` to sign JWT tokens. A fallback is temporarily hardcoded for local development, but deploying without a strong secret compromises authentication. Always generate a random 32-character string for production use.
 
 ---
 
-## 🛠️ Development (Lokal)
+## Local Development
+
+### Frontend Setup
 
 ```bash
-# Frontend
 npm install
 npx prisma db push
-npm run dev          # http://localhost:3000
+npm run dev
+```
+The frontend will be available at `http://localhost:3000`.
 
-# Backend
+### Backend Setup
+
+```bash
 cd backend
 python -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install fastapi uvicorn pandas openpyxl python-multipart
 uvicorn main:app --reload --port 8000
 ```
+The backend will run on `http://127.0.0.1:8000`.
 
 ---
 
-## 📁 Struktur Docker
+## Docker Maintenance
 
-```
-├── Dockerfile              # Multi-stage Next.js (deps → build → runner)
-├── docker-compose.yml      # 2 services: frontend + backend
-├── docker-entrypoint.sh    # Auto: prisma db push + seed admin user
-├── .dockerignore
-├── .env.example            # Template environment variables
-├── backend/
-│   ├── Dockerfile          # Python FastAPI image
-│   ├── main.py             # Transformation API
-│   └── requirements.txt
-└── prisma/
-    ├── schema.prisma       # User model (SQLite)
-    └── seed.js             # Creates admin user on first run
-```
-
-## Docker Commands
-
+Rebuild after pulling updates:
 ```bash
-# Rebuild setelah pull update
 docker compose up -d --build
+```
 
-# Lihat logs
-docker compose logs -f frontend
-docker compose logs -f backend
-
-# Restart
+Restart services:
+```bash
 docker compose restart
+```
 
-# Stop semua
+Stop all containers:
+```bash
 docker compose down
+```
 
-# Stop + hapus data (reset DB)
+Stop and reset database volume:
+```bash
 docker compose down -v
 ```

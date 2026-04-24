@@ -195,8 +195,8 @@ export default function AltLoginPage() {
         <div className={`${styles.shape} ${styles.memphisSquare}`} />
 
         <div className={styles.heroText}>
-          <span className={styles.heroLine1}>CPCM</span>
-          <span className={styles.heroLine2}>Analytics Dashboard</span>
+          <span className={styles.heroLine1}>MooBoard</span>
+          <span className={styles.heroLine2}>by Cow Play Cow Moo</span>
         </div>
       </div>
     </div>
