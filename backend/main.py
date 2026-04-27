@@ -428,6 +428,11 @@ async def transform_machine_rate_card(file: UploadFile = File(...)):
         df = df[df['Machine Name'] != '']
         df = df[df['Machine Name'].str.lower() != 'nan']
 
+        # Replace inf/NaN with 0 to avoid JSON serialization errors
+        import numpy as np
+        df = df.replace([np.inf, -np.inf], 0)
+        df = df.fillna(0)
+
         card_data = df.to_dict(orient='records')
 
         return {
