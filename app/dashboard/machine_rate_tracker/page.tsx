@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart"
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, LabelList, XAxis, YAxis, Legend } from "recharts"
-import { UploadCloud, Download, Wand2, Loader2, Info, ChevronDown, ChevronUp, Gamepad2, Coins, Ticket, Gauge, Hash, Filter, AlertTriangle } from "lucide-react"
+import { UploadCloud, Download, Wand2, Loader2, Info, ChevronDown, ChevronUp, Gamepad2, Coins, Ticket, Gauge, Hash, Filter, AlertTriangle, X } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 
 // Number formatter
@@ -110,6 +110,9 @@ export default function MachineRateTrackerPage() {
   const [cardLoading, setCardLoading] = useState(false)
   const [cardError, setCardError] = useState<string | null>(null)
   const [cardData, setCardData] = useState<CardData[] | null>(null)
+
+  // Urgent table row limit
+  const [urgentRowLimit, setUrgentRowLimit] = useState<number>(15)
 
   const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
 
@@ -437,7 +440,7 @@ export default function MachineRateTrackerPage() {
         })
       }
     })
-    const combined = Array.from(combinedMap.values()).sort((a, b) => b['Max Rate'] - a['Max Rate']).slice(0, 15)
+    const combined = Array.from(combinedMap.values()).sort((a, b) => b['Max Rate'] - a['Max Rate']).slice(0, urgentRowLimit)
 
     // 2) Player Side Grouped
     const playerSideMap = new Map<string, UrgentRow>()
@@ -472,12 +475,12 @@ export default function MachineRateTrackerPage() {
         })
       }
     })
-    const playerSide = Array.from(playerSideMap.values()).sort((a, b) => b['Max Rate'] - a['Max Rate']).slice(0, 15)
+    const playerSide = Array.from(playerSideMap.values()).sort((a, b) => b['Max Rate'] - a['Max Rate']).slice(0, urgentRowLimit)
 
     return { combined, playerSide }
-  }, [combinedGrouped, cardCombinedData, filteredGrouped, cardJoinedData])
+  }, [combinedGrouped, cardCombinedData, filteredGrouped, cardJoinedData, urgentRowLimit])
 
-  // Filtered metrics
+  // Filtered metrics (includes card data when available)
   const filteredMetrics = useMemo(() => {
     if (!result) return null
     
@@ -493,14 +496,21 @@ export default function MachineRateTrackerPage() {
     const totalTicketOut = data.reduce((sum, r) => sum + Number(r['Total ticket out'] || 0), 0)
     const totalCoinIn = data.reduce((sum, r) => sum + Number(r['Total Coin Input'] || 0), 0)
     const uniqueMachines = new Set(data.map(r => r['Machine Name'])).size
+
+    // Add Ticket Leak from card data if available
+    const totalTicketLeak = cardJoinedData.reduce((sum, r) => sum + r['Ticket Leak'], 0)
+
     return {
       total_ticket_out: totalTicketOut,
       total_coin_in: totalCoinIn,
+      total_ticket_leak: totalTicketLeak,
       overall_rate: totalCoinIn > 0 ? Math.round((totalTicketOut / totalCoinIn) * 10000) / 10000 : 0,
+      overall_rate_with_leak: totalCoinIn > 0 ? Math.round(((totalTicketOut + totalTicketLeak) / totalCoinIn) * 10000) / 10000 : 0,
       unique_machines: uniqueMachines,
       total_records: data.length,
+      has_card_data: cardJoinedData.length > 0,
     }
-  }, [result, selectedMonth, selectedStore, selectedGameTypes])
+  }, [result, selectedMonth, selectedStore, selectedGameTypes, cardJoinedData])
 
   // Filtered daily chart
   const filteredDaily = useMemo(() => {
@@ -609,6 +619,100 @@ export default function MachineRateTrackerPage() {
     : selectedGameTypes.size === 1
       ? [...selectedGameTypes][0]
       : `${selectedGameTypes.size} Game Types`
+
+  // Reusable RateTableCard component for Ticket Game (No Card) tables
+  const RateTableCard = ({ section }: { section: { title: string; data: GroupedRow[]; combinedData: CombinedRow[] }; handleSort: (col: 'Ticket Out' | 'Coin In' | 'Rate') => void; SortIcon: React.FC<{ col: string }> }) => (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-1">
+          {section.title}
+          <Tooltip><TooltipTrigger><Info className="h-3.5 w-3.5 text-muted-foreground" /></TooltipTrigger>
+            <TooltipContent>Grouped by Machine Name + Player Side. Rate = Ticket Out / Coin In</TooltipContent></Tooltip>
+        </CardTitle>
+        <CardDescription>Click column header to sort</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Tabs defaultValue="detail" className="w-full">
+          <TabsList>
+            <TabsTrigger value="detail">By Player Side</TabsTrigger>
+            <TabsTrigger value="combined">Combined Player</TabsTrigger>
+          </TabsList>
+          <TabsContent value="detail">
+            <div className="max-h-[600px] overflow-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="sticky top-0 bg-background">#</TableHead>
+                    <TableHead className="sticky top-0 bg-background">Machine Name</TableHead>
+                    <TableHead className="sticky top-0 bg-background">Player Side</TableHead>
+                    <TableHead className="sticky top-0 bg-background">Game Type</TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Ticket Out')}>
+                      Ticket Out<SortIcon col="Ticket Out" />
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Coin In')}>
+                      Coin In<SortIcon col="Coin In" />
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Rate')}>
+                      Rate<SortIcon col="Rate" />
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {section.data.map((row, i) => (
+                    <TableRow key={`${row['Machine Name']}-${row['Player Side']}-${i}`}>
+                      <TableCell className="text-muted-foreground">{i + 1}</TableCell>
+                      <TableCell className="font-medium">{row['Machine Name']}</TableCell>
+                      <TableCell>{row['Player Side']}</TableCell>
+                      <TableCell>{row['Game Type']}</TableCell>
+                      <TableCell className="text-right">{formatNumFull(row['Ticket Out'])}</TableCell>
+                      <TableCell className="text-right">{formatNumFull(row['Coin In'])}</TableCell>
+                      <TableCell className="text-right font-mono">{row.Rate.toFixed(4)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">{section.data.length} rows</p>
+          </TabsContent>
+          <TabsContent value="combined">
+            <div className="max-h-[600px] overflow-auto rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="sticky top-0 bg-background">#</TableHead>
+                    <TableHead className="sticky top-0 bg-background">Machine Name</TableHead>
+                    <TableHead className="sticky top-0 bg-background">Game Type</TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Ticket Out')}>
+                      Ticket Out<SortIcon col="Ticket Out" />
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Coin In')}>
+                      Coin In<SortIcon col="Coin In" />
+                    </TableHead>
+                    <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Rate')}>
+                      Rate<SortIcon col="Rate" />
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {section.combinedData.map((row, i) => (
+                    <TableRow key={`combined-${row['Machine Name']}-${i}`}>
+                      <TableCell className="text-muted-foreground">{i + 1}</TableCell>
+                      <TableCell className="font-medium">{row['Machine Name']}</TableCell>
+                      <TableCell>{row['Game Type']}</TableCell>
+                      <TableCell className="text-right">{formatNumFull(row['Ticket Out'])}</TableCell>
+                      <TableCell className="text-right">{formatNumFull(row['Coin In'])}</TableCell>
+                      <TableCell className="text-right font-mono">{row.Rate.toFixed(4)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">{section.combinedData.length} rows</p>
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+    </Card>
+  )
 
   return (
     <TooltipProvider>
@@ -742,6 +846,30 @@ export default function MachineRateTrackerPage() {
               <Button variant="outline" size="sm" onClick={handleDownload}><Download className="mr-2 h-4 w-4" />Download XLSX</Button>
             </div>
 
+            {/* Selected game type badges */}
+            {selectedGameTypes.size > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground mr-1">Active filters:</span>
+                {[...selectedGameTypes].map(gt => (
+                  <Badge key={gt} variant="secondary" className="pl-2 pr-1 py-0.5 gap-1 text-xs cursor-default">
+                    {gt}
+                    <button
+                      onClick={() => toggleGameType(gt)}
+                      className="ml-0.5 rounded-full hover:bg-muted-foreground/20 p-0.5 transition-colors"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </Badge>
+                ))}
+                <button
+                  onClick={() => setSelectedGameTypes(new Set())}
+                  className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2 ml-1 transition-colors"
+                >
+                  Clear all
+                </button>
+              </div>
+            )}
+
             {/* Metric Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
               {/* Total Ticket Out */}
@@ -755,7 +883,12 @@ export default function MachineRateTrackerPage() {
                     </CardDescription>
                   </div>
                 </CardHeader>
-                <CardContent><p className="text-2xl font-bold">{formatNumFull(filteredMetrics.total_ticket_out)}</p></CardContent>
+                <CardContent>
+                  <p className="text-2xl font-bold">{formatNumFull(filteredMetrics.total_ticket_out)}</p>
+                  {filteredMetrics.has_card_data && (
+                    <p className="text-xs text-muted-foreground mt-1">+ Leak: {formatNumFull(filteredMetrics.total_ticket_leak)}</p>
+                  )}
+                </CardContent>
               </Card>
               {/* Total Coin In */}
               <Card>
@@ -781,7 +914,12 @@ export default function MachineRateTrackerPage() {
                     </CardDescription>
                   </div>
                 </CardHeader>
-                <CardContent><p className="text-2xl font-bold">{filteredMetrics.overall_rate.toFixed(4)}</p></CardContent>
+                <CardContent>
+                  <p className="text-2xl font-bold">{filteredMetrics.overall_rate.toFixed(4)}</p>
+                  {filteredMetrics.has_card_data && (
+                    <p className="text-xs text-muted-foreground mt-1">With Leak: {filteredMetrics.overall_rate_with_leak.toFixed(4)}</p>
+                  )}
+                </CardContent>
               </Card>
               {/* Unique Machines */}
               <Card>
@@ -889,13 +1027,27 @@ export default function MachineRateTrackerPage() {
             {/* Machines Urgently Need Attention */}
             <Card className="border-red-500/30">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <AlertTriangle className="h-5 w-5 text-red-500" />
-                  Machines Urgently Need Attention
-                  <Tooltip><TooltipTrigger><Info className="h-3.5 w-3.5 text-muted-foreground" /></TooltipTrigger>
-                    <TooltipContent>Top 15 machines with highest rates across Ticket Game and Ticket Machine &amp; Card. High rate may indicate a machine needs inspection.</TooltipContent></Tooltip>
-                </CardTitle>
-                <CardDescription>Top 15 highest-rate machines from both data sources — combined player view</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="flex items-center gap-2">
+                      <AlertTriangle className="h-5 w-5 text-red-500" />
+                      Machines Urgently Need Attention
+                      <Tooltip><TooltipTrigger><Info className="h-3.5 w-3.5 text-muted-foreground" /></TooltipTrigger>
+                        <TooltipContent>Top machines with highest rates across Ticket Game and Ticket Machine &amp; Card. High rate may indicate a machine needs inspection.</TooltipContent></Tooltip>
+                    </CardTitle>
+                    <CardDescription>Highest-rate machines from both data sources</CardDescription>
+                  </div>
+                  <Select value={String(urgentRowLimit)} onValueChange={(v) => setUrgentRowLimit(Number(v))}>
+                    <SelectTrigger className="w-[120px]">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {[5, 10, 15, 25, 50].map(n => (
+                        <SelectItem key={n} value={String(n)}>Top {n}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </CardHeader>
               <CardContent>
                 {(urgentMachines.combined.length > 0) ? (
@@ -1057,102 +1209,54 @@ export default function MachineRateTrackerPage() {
 
               {/* Tab 1: Ticket Game (No Card) */}
               <TabsContent value="ticket-game" className="flex flex-col gap-4">
-                {[
-                  { title: "High Rate (> 40)", data: sortedGrouped.filter(r => r.Rate > 40), combinedData: sortedCombined.filter(r => r.Rate > 40) },
-                  { title: "Medium Rate (30 - 40)", data: sortedGrouped.filter(r => r.Rate >= 30 && r.Rate <= 40), combinedData: sortedCombined.filter(r => r.Rate >= 30 && r.Rate <= 40) },
-                  { title: "Low Rate (< 30)", data: sortedGrouped.filter(r => r.Rate < 30), combinedData: sortedCombined.filter(r => r.Rate < 30) },
-                ].map((section, idx) => (
-                  <Card key={idx}>
-                    <CardHeader>
-                      <CardTitle className="flex items-center gap-1">
-                        {section.title}
-                        <Tooltip><TooltipTrigger><Info className="h-3.5 w-3.5 text-muted-foreground" /></TooltipTrigger>
-                          <TooltipContent>Grouped by Machine Name + Player Side. Rate = Ticket Out ÷ Coin In</TooltipContent></Tooltip>
-                      </CardTitle>
-                      <CardDescription>Click column header to sort</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <Tabs defaultValue="detail" className="w-full">
-                        <TabsList>
-                          <TabsTrigger value="detail">By Player Side</TabsTrigger>
-                          <TabsTrigger value="combined">Combined Player</TabsTrigger>
-                        </TabsList>
-                        <TabsContent value="detail">
-                          <div className="max-h-[600px] overflow-auto rounded-md border">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead className="sticky top-0 bg-background">#</TableHead>
-                                  <TableHead className="sticky top-0 bg-background">Machine Name</TableHead>
-                                  <TableHead className="sticky top-0 bg-background">Player Side</TableHead>
-                                  <TableHead className="sticky top-0 bg-background">Game Type</TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Ticket Out')}>
-                                    Ticket Out<SortIcon col="Ticket Out" />
-                                  </TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Coin In')}>
-                                    Coin In<SortIcon col="Coin In" />
-                                  </TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Rate')}>
-                                    Rate<SortIcon col="Rate" />
-                                  </TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {section.data.map((row, i) => (
-                                  <TableRow key={`${row['Machine Name']}-${row['Player Side']}-${i}`}>
-                                    <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                                    <TableCell className="font-medium">{row['Machine Name']}</TableCell>
-                                    <TableCell>{row['Player Side']}</TableCell>
-                                    <TableCell>{row['Game Type']}</TableCell>
-                                    <TableCell className="text-right">{formatNumFull(row['Ticket Out'])}</TableCell>
-                                    <TableCell className="text-right">{formatNumFull(row['Coin In'])}</TableCell>
-                                    <TableCell className="text-right font-mono">{row.Rate.toFixed(4)}</TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-2">{section.data.length} rows</p>
+                {/* If multiple game types selected, show per-game-type sub-tabs */}
+                {selectedGameTypes.size > 1 ? (
+                  <Tabs defaultValue="all-combined" className="w-full">
+                    <TabsList className="mb-2 flex-wrap h-auto gap-1">
+                      <TabsTrigger value="all-combined">All Game Types</TabsTrigger>
+                      {[...selectedGameTypes].map(gt => (
+                        <TabsTrigger key={gt} value={gt}>{gt}</TabsTrigger>
+                      ))}
+                    </TabsList>
+                    {/* All Combined tab */}
+                    <TabsContent value="all-combined" className="flex flex-col gap-4">
+                      {[
+                        { title: "High Rate (> 40)", data: sortedGrouped.filter(r => r.Rate > 40), combinedData: sortedCombined.filter(r => r.Rate > 40) },
+                        { title: "Medium Rate (30 - 40)", data: sortedGrouped.filter(r => r.Rate >= 30 && r.Rate <= 40), combinedData: sortedCombined.filter(r => r.Rate >= 30 && r.Rate <= 40) },
+                        { title: "Low Rate (< 30)", data: sortedGrouped.filter(r => r.Rate < 30), combinedData: sortedCombined.filter(r => r.Rate < 30) },
+                      ].map((section, idx) => (
+                        <RateTableCard key={`all-${idx}`} section={section} handleSort={handleSort} SortIcon={SortIcon} />
+                      ))}
+                    </TabsContent>
+                    {/* Per-game-type tabs */}
+                    {[...selectedGameTypes].map(gt => {
+                      const gtGrouped = sortedGrouped.filter(r => r['Game Type'] === gt)
+                      const gtCombined = sortedCombined.filter(r => r['Game Type'] === gt)
+                      return (
+                        <TabsContent key={gt} value={gt} className="flex flex-col gap-4">
+                          {[
+                            { title: "High Rate (> 40)", data: gtGrouped.filter(r => r.Rate > 40), combinedData: gtCombined.filter(r => r.Rate > 40) },
+                            { title: "Medium Rate (30 - 40)", data: gtGrouped.filter(r => r.Rate >= 30 && r.Rate <= 40), combinedData: gtCombined.filter(r => r.Rate >= 30 && r.Rate <= 40) },
+                            { title: "Low Rate (< 30)", data: gtGrouped.filter(r => r.Rate < 30), combinedData: gtCombined.filter(r => r.Rate < 30) },
+                          ].map((section, idx) => (
+                            <RateTableCard key={`${gt}-${idx}`} section={section} handleSort={handleSort} SortIcon={SortIcon} />
+                          ))}
                         </TabsContent>
-                        <TabsContent value="combined">
-                          <div className="max-h-[600px] overflow-auto rounded-md border">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  <TableHead className="sticky top-0 bg-background">#</TableHead>
-                                  <TableHead className="sticky top-0 bg-background">Machine Name</TableHead>
-                                  <TableHead className="sticky top-0 bg-background">Game Type</TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Ticket Out')}>
-                                    Ticket Out<SortIcon col="Ticket Out" />
-                                  </TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Coin In')}>
-                                    Coin In<SortIcon col="Coin In" />
-                                  </TableHead>
-                                  <TableHead className="sticky top-0 bg-background cursor-pointer select-none text-right" onClick={() => handleSort('Rate')}>
-                                    Rate<SortIcon col="Rate" />
-                                  </TableHead>
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {section.combinedData.map((row, i) => (
-                                  <TableRow key={`combined-${row['Machine Name']}-${i}`}>
-                                    <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                                    <TableCell className="font-medium">{row['Machine Name']}</TableCell>
-                                    <TableCell>{row['Game Type']}</TableCell>
-                                    <TableCell className="text-right">{formatNumFull(row['Ticket Out'])}</TableCell>
-                                    <TableCell className="text-right">{formatNumFull(row['Coin In'])}</TableCell>
-                                    <TableCell className="text-right font-mono">{row.Rate.toFixed(4)}</TableCell>
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-2">{section.combinedData.length} rows</p>
-                        </TabsContent>
-                      </Tabs>
-                    </CardContent>
-                  </Card>
-                ))}
+                      )
+                    })}
+                  </Tabs>
+                ) : (
+                  /* Default: no sub-tabs */
+                  <>
+                    {[
+                      { title: "High Rate (> 40)", data: sortedGrouped.filter(r => r.Rate > 40), combinedData: sortedCombined.filter(r => r.Rate > 40) },
+                      { title: "Medium Rate (30 - 40)", data: sortedGrouped.filter(r => r.Rate >= 30 && r.Rate <= 40), combinedData: sortedCombined.filter(r => r.Rate >= 30 && r.Rate <= 40) },
+                      { title: "Low Rate (< 30)", data: sortedGrouped.filter(r => r.Rate < 30), combinedData: sortedCombined.filter(r => r.Rate < 30) },
+                    ].map((section, idx) => (
+                      <RateTableCard key={`default-${idx}`} section={section} handleSort={handleSort} SortIcon={SortIcon} />
+                    ))}
+                  </>
+                )}
               </TabsContent>
 
               {/* Tab 2: Ticket Machine & Card */}
