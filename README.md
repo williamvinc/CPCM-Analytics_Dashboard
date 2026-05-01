@@ -64,7 +64,7 @@ docker compose logs -f
 | Variable | Required | Description | Example |
 |---|---|---|---|
 | `AUTH_SECRET` | Yes | Secret key to sign NextAuth JWT tokens. | Generate via: `openssl rand -base64 32` |
-| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend URL accessed from the client browser. | `http://110.239.80.161:8000` |
+| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend URL accessed from the client browser. | `http://216.72.172:8000` |
 | `SEED_USER_EMAIL` | No | Initial admin email (default: admin@cpcm.com). | `admin@cpcm.com` |
 | `SEED_USER_PASSWORD` | No | Initial admin password (default: admin123). | `admin123` |
 | `SEED_USER_NAME` | No | Initial admin name (default: Admin). | `Admin` |
