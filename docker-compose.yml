@@ -4,11 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://216.72.0.172:8000}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://217.216.72.172:8000}
     ports:
       - "3000:3000"
     environment:
-      - AUTH_URL=${AUTH_URL:-http://216.72.0.172:3000}
+      - AUTH_URL=${AUTH_URL:-http://217.216.72.172:3000}
       - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
       - AUTH_TRUST_HOST=true
       - DATABASE_URL=file:/app/data/prod.db
