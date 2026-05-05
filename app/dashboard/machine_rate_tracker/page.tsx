@@ -317,11 +317,13 @@ export default function MachineRateTrackerPage() {
     const excel1Map = new Map<string, { ticketOut: number; coinIn: number }>()
     filtered.forEach((r) => {
       const name = String(r['Machine Name'] || '').trim()
+      const side = String(r['Player Side'] || '').trim()
       if (!name) return
-      const existing = excel1Map.get(name) || { ticketOut: 0, coinIn: 0 }
+      const key = `${name}|||${side}`
+      const existing = excel1Map.get(key) || { ticketOut: 0, coinIn: 0 }
       existing.ticketOut += Number(r['Total ticket out'] || 0)
       existing.coinIn += Number(r['Total Coin Input'] || 0)
-      excel1Map.set(name, existing)
+      excel1Map.set(key, existing)
     })
 
     // Right join: baseline is Excel2 (card_data)
@@ -330,7 +332,7 @@ export default function MachineRateTrackerPage() {
       const playerSide = String(card['Player Side'] || '').trim()
       const ticketLeak = Number(card['Ticket Leak'] || 0)
 
-      const excel1 = excel1Map.get(machineName) || { ticketOut: 0, coinIn: 0 }
+      const excel1 = excel1Map.get(`${machineName}|||${playerSide}`) || { ticketOut: 0, coinIn: 0 }
 
       const rate = excel1.coinIn > 0 ? Math.round(((excel1.ticketOut + ticketLeak) / excel1.coinIn) * 10000) / 10000 : 0
 
@@ -354,8 +356,8 @@ export default function MachineRateTrackerPage() {
     const map = new Map<string, { coinIn: number; ticketOut: number; ticketLeak: number }>()
     cardJoinedData.forEach((r) => {
       const existing = map.get(r['Machine Name']) || { coinIn: 0, ticketOut: 0, ticketLeak: 0 }
-      existing.coinIn = r['Coin In'] // same per machine since Excel1 is aggregated by machine name
-      existing.ticketOut = r['Ticket Out']
+      existing.coinIn += r['Coin In']
+      existing.ticketOut += r['Ticket Out']
       existing.ticketLeak += r['Ticket Leak']
       map.set(r['Machine Name'], existing)
     })
