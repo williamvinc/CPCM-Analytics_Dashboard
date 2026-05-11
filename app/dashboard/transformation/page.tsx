@@ -4,14 +4,13 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardAction, 
 import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ChartContainer, ChartStyle, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart"
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, XAxis, YAxis, Pie, PieChart, Sector, Label as RechartsLabel } from "recharts"
 import type { PieSectorShapeProps } from "recharts/types/polar/Pie"
-import { UploadCloud, Download, Wand2, Loader2, TrendingUpIcon, TrendingDownIcon, CalendarDays, Info, ChevronDown, ChevronUp } from "lucide-react"
+import { Download, Loader2, TrendingUpIcon, TrendingDownIcon, CalendarDays, Info } from "lucide-react"
 
 // Rupiah formatter (compact)
 const formatRp = (val: number) => {
@@ -111,55 +110,53 @@ function InfoTooltip({ text }: { text: string }) {
 }
 
 export default function TransformationPage() {
-  const [file, setFile] = useState<File | null>(null)
+  const today = new Date()
+  const firstOfMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+
+  const [startDate, setStartDate] = useState<string>(firstOfMonth)
+  const [endDate, setEndDate] = useState<string>(todayStr)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<TransformResult | null>(null)
   const [selectedMonth, setSelectedMonth] = useState<string>("all")
   const [activeTender, setActiveTender] = useState<string>("")
-  const [uploadExpanded, setUploadExpanded] = useState(true)
+  const [reconciliation, setReconciliation] = useState<any>(null)
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0])
-      setError(null)
-    }
-  }
-
-  const handleTransform = async () => {
-    if (!file) {
-      setError("Please select a file first.")
-      return
-    }
-
+  const fetchData = async (start: string, end: string) => {
     setLoading(true)
     setError(null)
     setSelectedMonth("all")
 
-    const formData = new FormData()
-    formData.append("file", file)
-
     try {
       const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"
-      const response = await fetch(`${backendUrl}/api/transform/sales`, {
-        method: "POST",
-        body: formData,
-      })
+      const [salesRes, reconRes] = await Promise.all([
+        fetch(`${backendUrl}/api/sales?start_date=${start}&end_date=${end}`),
+        fetch(`${backendUrl}/api/reconciliation?start_date=${start}&end_date=${end}`),
+      ])
 
-      if (!response.ok) {
-        const errData = await response.json()
-        throw new Error(errData.detail || "Transformation failed on the server.")
+      if (!salesRes.ok) {
+        const errData = await salesRes.json()
+        throw new Error(errData.detail || "Failed to fetch sales data.")
       }
 
-      const data = await response.json()
+      const data = await salesRes.json()
       setResult(data)
-      setUploadExpanded(false) // Collapse upload after success
+
+      if (reconRes.ok) {
+        const reconData = await reconRes.json()
+        setReconciliation(reconData)
+      }
     } catch (err: any) {
       setError(err.message)
     } finally {
       setLoading(false)
     }
   }
+
+  React.useEffect(() => {
+    fetchData(firstOfMonth, todayStr)
+  }, [])
 
   // ---- CLIENT-SIDE MONTH FILTERING ----
   const filteredData = useMemo(() => {
@@ -378,11 +375,6 @@ export default function TransformationPage() {
     URL.revokeObjectURL(url)
   }
 
-  const tableData = useMemo(() => {
-    if (!filteredData) return []
-    return filteredData.slice(0, 100)
-  }, [filteredData])
-
   // ---- COMPARISON CARD HELPER ----
   function MetricCard({
     title,
@@ -459,56 +451,52 @@ export default function TransformationPage() {
           <p className="text-muted-foreground">Automate Sales Data</p>
         </div>
 
-        {/* Upload Card — collapsible after result */}
-        <Card className={`border-2 border-dashed transition-all duration-300 ${!uploadExpanded && result ? 'overflow-hidden' : ''}`}>
+        {/* Filter + Download Row — aligned right */}
+        <div className="flex items-center gap-3 flex-wrap justify-end">
+          <div className="flex items-center gap-3">
+            <CalendarDays className="w-4 h-4 text-muted-foreground" />
+            <div className="flex items-center gap-2">
+              <Label htmlFor="start-date" className="text-sm font-medium">From</Label>
+              <Input
+                id="start-date"
+                type="date"
+                value={startDate}
+                onChange={(e) => { setStartDate(e.target.value); if (e.target.value && endDate) fetchData(e.target.value, endDate) }}
+                className="w-[160px]"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="end-date" className="text-sm font-medium">To</Label>
+              <Input
+                id="end-date"
+                type="date"
+                value={endDate}
+                onChange={(e) => { setEndDate(e.target.value); if (startDate && e.target.value) fetchData(startDate, e.target.value) }}
+                className="w-[160px]"
+              />
+            </div>
+          </div>
+          {result?.available_months && result.available_months.length > 1 && (
+            <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+              <SelectTrigger className="w-[150px]">
+                <SelectValue placeholder="Filter by month" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Months</SelectItem>
+                {result.available_months.map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           {result && (
-            <button
-              onClick={() => setUploadExpanded(!uploadExpanded)}
-              className="w-full flex items-center justify-between px-6 py-3 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <span className="flex items-center gap-2">
-                <UploadCloud className="w-4 h-4" />
-                {file?.name || 'Upload File'}
-              </span>
-              {uploadExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
+            <Button onClick={handleDownload} variant="default" size="default" className="shadow-md rounded-xl font-bold">
+              <Download className="w-4 h-4 mr-2" />
+              Download (.xlsx)
+            </Button>
           )}
-          {(uploadExpanded || !result) && (
-            <CardContent className={result ? 'pt-0 pb-6' : 'pt-6'}>
-              <div className="flex flex-col md:flex-row items-center gap-6 justify-center text-center">
-                <div className="flex flex-col items-center gap-2 flex-1">
-                  {!result && <UploadCloud className="w-12 h-12 text-muted-foreground" />}
-                  <Label htmlFor="file-upload" className="font-semibold text-lg cursor-pointer hover:underline text-primary">
-                    Upload SalesDetails.xlsx
-                  </Label>
-                  <Input
-                    id="file-upload"
-                    type="file"
-                    accept=".xlsx,.xls"
-                    onChange={handleFileChange}
-                    className="max-w-xs cursor-pointer bg-muted/30"
-                  />
-                  <p className="text-xs text-muted-foreground">Data must have header on row 7</p>
-                </div>
-
-                <div className="flex items-center">
-                  <Button
-                    onClick={handleTransform}
-                    disabled={!file || loading}
-                    size="lg"
-                    className="font-bold text-md px-8 py-6 rounded-xl shadow-lg border hover:scale-[1.02] transition-transform"
-                  >
-                    {loading ? (
-                      <><Loader2 className="mr-2 h-5 w-5 animate-spin" /> Processing...</>
-                    ) : (
-                      <><Wand2 className="mr-2 h-5 w-5" /> Transform Data</>
-                    )}
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          )}
-        </Card>
+          {loading && <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />}
+        </div>
 
         {error && (
           <div className="p-4 bg-destructive/10 text-destructive font-bold rounded-lg animate-in slide-in-from-top-2">
@@ -519,61 +507,14 @@ export default function TransformationPage() {
         {result && filteredMetrics && (
           <div className="flex flex-col gap-6 animate-in fade-in zoom-in-95 duration-500">
 
-            {/* Filter + Download Row — aligned left */}
-            <div className="flex items-center gap-3">
-              {result.available_months.length > 0 && (
-                <div className="flex items-center gap-2">
-                  <CalendarDays className="w-4 h-4 text-muted-foreground" />
-                  <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-                    <SelectTrigger className="w-[180px]">
-                      <SelectValue placeholder="Filter by month" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Months</SelectItem>
-                      {result.available_months.map((m) => (
-                        <SelectItem key={m} value={m}>{m}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-              <Button onClick={handleDownload} variant="default" size="lg" className="shadow-md rounded-xl font-bold">
-                <Download className="w-5 h-5 mr-2" />
-                Download (.xlsx)
-              </Button>
-            </div>
-
             {/* Metric Cards with Period Comparison */}
-            <div className="grid grid-cols-1 gap-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs @xl/main:grid-cols-2 @5xl/main:grid-cols-4 dark:*:data-[slot=card]:bg-card">
+            <div className="grid grid-cols-1 gap-4 *:data-[slot=card]:bg-gradient-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card *:data-[slot=card]:shadow-xs dark:*:data-[slot=card]:bg-card">
               <MetricCard
                 title="Total Gross Amount"
                 value={selectedMonth === "all" ? (currentPeriodMetrics?.total_gross ?? filteredMetrics.total_gross) : filteredMetrics.total_gross}
                 prevValue={previousMetrics?.total_gross ?? null}
                 footerLabel={comparisonLabel || 'All periods combined'}
                 tooltipText="Sum of column 'Gross Amount' from transformed data"
-              />
-              <MetricCard
-                title="Transactions"
-                value={selectedMonth === "all" ? (currentPeriodMetrics?.total_transactions ?? filteredMetrics.total_transactions) : filteredMetrics.total_transactions}
-                prevValue={previousMetrics?.total_transactions ?? null}
-                formatter={(v) => v.toLocaleString('id-ID')}
-                footerLabel={comparisonLabel || 'All periods combined'}
-                tooltipText="Count of rows after transformation (filtered by Category & Item rules)"
-              />
-              <MetricCard
-                title="Avg / Transaction"
-                value={selectedMonth === "all" ? (currentPeriodMetrics?.avg_per_transaction ?? filteredMetrics.avg_per_transaction) : filteredMetrics.avg_per_transaction}
-                prevValue={previousMetrics?.avg_per_transaction ?? null}
-                footerLabel={comparisonLabel || 'All periods combined'}
-                tooltipText="Total Gross Amount ÷ Number of Transactions"
-              />
-              <MetricCard
-                title="Total Qty Sold"
-                value={selectedMonth === "all" ? (currentPeriodMetrics?.total_qty ?? filteredMetrics.total_qty) : filteredMetrics.total_qty}
-                prevValue={previousMetrics?.total_qty ?? null}
-                formatter={(v) => v.toLocaleString('id-ID')}
-                footerLabel={comparisonLabel || 'All periods combined'}
-                tooltipText="Sum of column 'Item Qty' from transformed data"
               />
             </div>
 
@@ -672,10 +613,10 @@ export default function TransformationPage() {
                     config={{ gross: { label: 'Gross Amount', color: 'var(--chart-2)' } }}
                     className="h-[300px] w-full"
                   >
-                    <BarChart data={filteredChartCategory} margin={{ top: 10, right: 10, bottom: 20, left: 20 }} layout="vertical">
+                    <BarChart data={filteredChartCategory} margin={{ top: 10, right: 10, bottom: 20, left: 0 }} layout="vertical">
                       <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                       <XAxis type="number" tickFormatter={(val) => formatRp(val)} />
-                      <YAxis dataKey="New Category" type="category" width={170} tick={{ fontSize: 11 }} />
+                      <YAxis dataKey="New Category" type="category" width={200} tick={{ fontSize: 12 }} />
                       <ChartTooltip content={<ChartTooltipContent />} />
                       <Bar dataKey="Gross Amount" fill="var(--color-gross)" radius={[0, 4, 4, 0]} />
                     </BarChart>
@@ -833,45 +774,56 @@ export default function TransformationPage() {
               )}
             </div>
 
-            {/* Data Table */}
-            <Card className="shadow-sm overflow-hidden">
-              <CardHeader className="bg-muted/30">
-                <CardTitle className="flex items-center">
-                  Preview Transformed Data
-                  <InfoTooltip text="Shows the first 100 rows of transformed data. Columns include original data + 'New Category' and 'Source' (computed columns)." />
-                </CardTitle>
-                <CardDescription>Showing first 100 entries{selectedMonth !== "all" ? ` for ${selectedMonth}` : ''}.</CardDescription>
-              </CardHeader>
-              <CardContent className="p-0">
-                <div className="overflow-x-auto max-h-[500px]">
-                  <Table>
-                    <TableHeader className="bg-muted/50 sticky top-0 z-10 shadow-sm">
-                      <TableRow>
-                        {tableData.length > 0 && Object.keys(tableData[0]).map((key) => (
-                          <TableHead key={key} className="whitespace-nowrap font-bold text-foreground">{key}</TableHead>
+            {/* Reconciliation Table */}
+            {reconciliation?.data && reconciliation.data.length > 0 && (
+              <Card className="shadow-sm">
+                <CardHeader>
+                  <CardTitle>POS vs Bank</CardTitle>
+                </CardHeader>
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b bg-muted/40">
+                          <th className="px-4 py-3 text-left font-medium text-muted-foreground">Date</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">POS</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">BCA</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">BRI</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">BCA + BRI</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">Difference</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {reconciliation.data.map((row: any, i: number) => (
+                          <tr key={row.date} className={i % 2 === 0 ? '' : 'bg-muted/20'}>
+                            <td className="px-4 py-2.5 font-medium">{row.date}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.pos)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bca)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bri)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bank_total)}</td>
+                            <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${row.difference < 0 ? 'text-red-500' : ''}`}>
+                              {formatRpFull(row.difference)}
+                            </td>
+                          </tr>
                         ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {tableData.map((row: any, i: number) => (
-                        <TableRow key={i}>
-                          {Object.values(row).map((val: any, colIdx: number) => (
-                            <TableCell key={colIdx} className="whitespace-nowrap">
-                              {val !== null ? String(val) : '-'}
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                      {tableData.length === 0 && (
-                        <TableRow>
-                          <TableCell colSpan={5} className="text-center h-24 text-muted-foreground">No data found after transformations</TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </div>
-              </CardContent>
-            </Card>
+                      </tbody>
+                      <tfoot>
+                        <tr className="border-t-2 font-semibold bg-muted/40">
+                          <td className="px-4 py-3">Total</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(reconciliation.totals.pos)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(reconciliation.totals.bca)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(reconciliation.totals.bri)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(reconciliation.totals.bank_total)}</td>
+                          <td className={`px-4 py-3 text-right tabular-nums font-bold ${reconciliation.totals.difference < 0 ? 'text-red-500' : ''}`}>
+                            {formatRpFull(reconciliation.totals.difference)}
+                          </td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
           </div>
         )}

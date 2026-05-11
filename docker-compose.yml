@@ -24,6 +24,12 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    environment:
+      - DB_HOST=217.216.72.172
+      - DB_PORT=41828
+      - DB_NAME=mooboard
+      - DB_USER=mooboard
+      - DB_PASSWORD=MooBoard123!
     restart: unless-stopped
 
 volumes:
