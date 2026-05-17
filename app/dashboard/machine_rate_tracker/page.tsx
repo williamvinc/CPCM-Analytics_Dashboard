@@ -1288,7 +1288,7 @@ export default function MachineRateTrackerPage() {
                 {cardData ? (
                   [
                     { title: "High Rate (> 55)", data: sortedCardData.filter(r => r.Rate > 55), combinedData: sortedCardCombined.filter(r => r.Rate > 55) },
-                    { title: "Medium Rate (30 - 40)", data: sortedCardData.filter(r => r.Rate >= 30 && r.Rate <= 40), combinedData: sortedCardCombined.filter(r => r.Rate >= 30 && r.Rate <= 40) },
+                    { title: "Medium Rate (30 - 55)", data: sortedCardData.filter(r => r.Rate >= 30 && r.Rate <= 55), combinedData: sortedCardCombined.filter(r => r.Rate >= 30 && r.Rate <= 55) },
                     { title: "Low Rate (< 30)", data: sortedCardData.filter(r => r.Rate < 30), combinedData: sortedCardCombined.filter(r => r.Rate < 30) },
                   ].map((section, idx) => (
                     <Card key={`card-${idx}`}>
