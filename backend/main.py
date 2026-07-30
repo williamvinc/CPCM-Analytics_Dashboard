@@ -1,10 +1,15 @@
 import os
+import json
+import hashlib
+import gzip
 import pandas as pd
 import re
 import io
 import base64
 import math
 import psycopg2
+import redis
+from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -17,6 +22,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+redis_client = redis.from_url(REDIS_URL, decode_responses=False)
+CACHE_TTL = 600  # 10 minutes
+
+def cache_key(*args) -> str:
+    raw = json.dumps(args, sort_keys=True)
+    return f"mooboard:{hashlib.md5(raw.encode()).hexdigest()}"
+
+def get_cached(key: str):
+    data = redis_client.get(key)
+    if data:
+        return json.loads(gzip.decompress(data))
+    return None
+
+def set_cached(key: str, value):
+    try:
+        compressed = gzip.compress(json.dumps(value, default=str).encode())
+        redis_client.setex(key, CACHE_TTL, compressed)
+    except Exception:
+        pass
 
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = int(os.getenv("DB_PORT", "41828"))
@@ -61,56 +87,41 @@ def process_sales_dataframe(df: pd.DataFrame) -> dict:
     valid_categories = ["01-Ticketing", "TC01-Ticket Cartenz"]
     df_filtered = df[df['Category'].isin(valid_categories)].copy()
 
-    df_filtered['New Category'] = 'null'
-    df_filtered['Source'] = 'null'
+    item_str = df_filtered['Item'].astype(str).str.strip()
+    item_lower = item_str.str.lower()
+    gross_amt = pd.to_numeric(df_filtered['Gross Amount'], errors='coerce').fillna(0)
 
-    indices_to_drop = []
+    is_kaos_kaki = item_str.str.contains(r'\b(XXS|XS|S|M|L)$', flags=re.IGNORECASE, regex=True)
+    is_2jam = item_lower.str.contains(r'2\s*jam', regex=True)
+    is_3jam = item_lower.str.contains(r'3\s*jam', regex=True)
+    is_1comp = item_lower.str.contains(r'1\s*comp|companion\s*1', regex=True)
+    is_2comp = item_lower.str.contains(r'2\s*comp|companion\s*2', regex=True)
 
-    for idx, row in df_filtered.iterrows():
-        item = str(row['Item']).strip()
-        item_lower = item.lower()
-        gross_amt = row['Gross Amount']
+    new_cat = pd.Series('null', index=df_filtered.index)
+    new_cat = new_cat.where(~is_2jam, 'Tiket Bermain - 2 Jam')
+    new_cat = new_cat.where(~(~is_2jam & is_3jam), 'Tiket Bermain - 3 Jam')
+    new_cat = new_cat.where(~(~is_2jam & ~is_3jam & is_1comp), 'Tiket Pendamping - 1 Orang')
+    new_cat = new_cat.where(~(~is_2jam & ~is_3jam & ~is_1comp & is_2comp), 'Tiket Pendamping - 2 Orang')
 
-        try:
-            gross_amt_val = float(gross_amt)
-        except (ValueError, TypeError):
-            gross_amt_val = None
+    has_new_cat = new_cat != 'null'
+    is_blibli = item_lower.str.contains('blibli', regex=False)
+    is_tiketcom = item_lower.str.contains(r'tiket\s*com|ticket\s*com|tiket\.com|ticket\.com', regex=True)
+    is_website = item_lower.str.contains('website|web', regex=True)
+    is_skye = item_lower.str.contains(r'skye|marshall|sbsp', regex=True)
 
-        if re.search(r'\b(XXS|XS|S|M|L)$', item, re.IGNORECASE):
-            df_filtered.at[idx, 'Source'] = 'KAOS KAKI'
-            if gross_amt_val == 0 or (isinstance(gross_amt_val, float) and math.isnan(gross_amt_val)):
-                indices_to_drop.append(idx)
-            continue
+    source = pd.Series('null', index=df_filtered.index)
+    source = source.where(~(has_new_cat & is_blibli), 'BLIBLI')
+    source = source.where(~(has_new_cat & ~is_blibli & is_tiketcom), 'TIKET.COM')
+    source = source.where(~(has_new_cat & ~is_blibli & ~is_tiketcom & is_website), 'WEBSITE')
+    source = source.where(~(has_new_cat & ~is_blibli & ~is_tiketcom & ~is_website & is_skye), 'KAOS KAKI')
+    source = source.where(~(has_new_cat & ~is_blibli & ~is_tiketcom & ~is_website & ~is_skye), 'WALK IN')
+    source = source.where(~is_kaos_kaki, 'KAOS KAKI')
 
-        new_cat = 'null'
-        source = 'null'
+    df_filtered['New Category'] = new_cat
+    df_filtered['Source'] = source
 
-        if re.search(r'2\s*jam', item_lower):
-            new_cat = 'Tiket Bermain - 2 Jam'
-        elif re.search(r'3\s*jam', item_lower):
-            new_cat = 'Tiket Bermain - 3 Jam'
-        elif re.search(r'(1\s*comp|companion\s*1)', item_lower):
-            new_cat = 'Tiket Pendamping - 1 Orang'
-        elif re.search(r'(2\s*comp|companion\s*2)', item_lower):
-            new_cat = 'Tiket Pendamping - 2 Orang'
-
-        if new_cat == 'null':
-            source = 'null'
-        elif 'blibli' in item_lower:
-            source = 'BLIBLI'
-        elif re.search(r'tiket\s*com|ticket\s*com|tiket\.com|ticket\.com', item_lower):
-            source = 'TIKET.COM'
-        elif 'website' in item_lower or 'web' in item_lower:
-            source = 'WEBSITE'
-        elif re.search(r'skye|marshall|sbsp', item_lower):
-            source = 'KAOS KAKI'
-        else:
-            source = 'WALK IN'
-
-        df_filtered.at[idx, 'New Category'] = new_cat
-        df_filtered.at[idx, 'Source'] = source
-
-    df_result = df_filtered.drop(index=indices_to_drop)
+    drop_mask = is_kaos_kaki & ((gross_amt == 0) | gross_amt.isna())
+    df_result = df_filtered[~drop_mask].copy()
     df_result = df_result[~((df_result['New Category'] == 'null') & (df_result['Source'] == 'null'))]
 
     unnamed_cols = [col for col in df_result.columns if 'Unnamed:' in str(col)]
@@ -238,12 +249,42 @@ def process_sales_dataframe(df: pd.DataFrame) -> dict:
     }
 
 
+@app.get("/api/outlets")
+async def get_outlets():
+    try:
+        ck = cache_key("outlets")
+        cached = get_cached(ck)
+        if cached:
+            return cached
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+        )
+        query = "SELECT DISTINCT outlet FROM pos_sales WHERE outlet IS NOT NULL AND outlet != '' ORDER BY outlet"
+        df = pd.read_sql(query, conn)
+        conn.close()
+        outlets_list = [{"id": o, "label": o} for o in df['outlet'].tolist() if o]
+        result = {"outlets": outlets_list}
+        set_cached(ck, result)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/sales")
 async def get_sales(
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    outlet: Optional[List[str]] = Query(None, description="Optional outlet filter (multi)"),
 ):
     try:
+        ck = cache_key("sales", start_date, end_date, outlet)
+        cached = get_cached(ck)
+        if cached:
+            return cached
         conn = psycopg2.connect(
             host=DB_HOST,
             port=DB_PORT,
@@ -252,14 +293,20 @@ async def get_sales(
             password=DB_PASSWORD,
         )
         query = "SELECT * FROM pos_sales WHERE business_date >= %s AND business_date <= %s"
-        df = pd.read_sql(query, conn, params=[start_date + " 00:00:00", end_date + " 23:59:59"])
+        params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        if outlet:
+            query += " AND outlet IN %s"
+            params.append(tuple(outlet))
+        df = pd.read_sql(query, conn, params=params)
         conn.close()
 
         if df.empty:
             raise HTTPException(status_code=404, detail="No data found for the selected date range.")
 
         df = df.rename(columns=COLUMN_MAP)
-        return process_sales_dataframe(df)
+        result = process_sales_dataframe(df)
+        set_cached(ck, result)
+        return result
 
     except HTTPException:
         raise
@@ -273,8 +320,13 @@ async def get_sales(
 async def get_reconciliation(
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    outlet: Optional[List[str]] = Query(None, description="Optional outlet filter (multi)"),
 ):
     try:
+        ck = cache_key("reconciliation", start_date, end_date, outlet)
+        cached = get_cached(ck)
+        if cached:
+            return cached
         conn = psycopg2.connect(
             host=DB_HOST,
             port=DB_PORT,
@@ -287,10 +339,13 @@ async def get_reconciliation(
             SELECT DATE(business_date) as date, SUM(gross_sales_all_incl) as pos
             FROM pos_sales
             WHERE business_date >= %s AND business_date <= %s
-            GROUP BY DATE(business_date)
-            ORDER BY date
         """
-        pos_df = pd.read_sql(pos_query, conn, params=[start_date + " 00:00:00", end_date + " 23:59:59"])
+        pos_params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        if outlet:
+            pos_query += " AND outlet IN %s"
+            pos_params.append(tuple(outlet))
+        pos_query += " GROUP BY DATE(business_date) ORDER BY date"
+        pos_df = pd.read_sql(pos_query, conn, params=pos_params)
 
         bca_query = """
             SELECT
@@ -336,7 +391,7 @@ async def get_reconciliation(
         for col in ['pos', 'bca', 'bri', 'bank_total', 'difference']:
             result_df[col] = result_df[col].astype(float)
 
-        return {
+        result = {
             "success": True,
             "data": result_df.to_dict(orient='records'),
             "totals": {
@@ -347,6 +402,124 @@ async def get_reconciliation(
                 "difference": float(result_df['difference'].sum()),
             }
         }
+        set_cached(ck, result)
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/fnb-sales")
+async def get_fnb_sales(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    outlet: Optional[List[str]] = Query(None, description="Optional outlet filter (multi)"),
+):
+    try:
+        ck = cache_key("fnb-sales", start_date, end_date, outlet)
+        cached = get_cached(ck)
+        if cached:
+            return cached
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+        )
+
+        fnb_categories = ('03-Food', 'FC01-Food', '04-Beverages', 'BC01-Beverages')
+        base_where = "category IN %s AND business_date >= %s AND business_date <= %s"
+        params = [fnb_categories, start_date + " 00:00:00", end_date + " 23:59:59"]
+        if outlet:
+            base_where += " AND outlet IN %s"
+            params.append(tuple(outlet))
+
+        query = f"SELECT * FROM pos_sales WHERE {base_where}"
+        df = pd.read_sql(query, conn, params=params)
+
+        if df.empty:
+            conn.close()
+            return {
+                "success": True,
+                "metrics": {"total_gross": 0, "total_qty": 0, "total_transactions": 0, "avg_per_transaction": 0},
+                "peak_hours": [],
+                "top_10_items": [],
+                "bottom_10_items": [],
+            }
+
+        df['gross_amount'] = pd.to_numeric(df['gross_amount'], errors='coerce').fillna(0)
+        df['item_qty'] = pd.to_numeric(df['item_qty'], errors='coerce').fillna(0)
+
+        total_gross = float(df['gross_amount'].sum())
+        total_qty = int(df['item_qty'].sum())
+        total_transactions = len(df)
+        avg_per_transaction = round(total_gross / total_transactions, 2) if total_transactions > 0 else 0
+
+        metrics = {
+            "total_gross": total_gross,
+            "total_qty": total_qty,
+            "total_transactions": total_transactions,
+            "avg_per_transaction": avg_per_transaction,
+        }
+
+        df['bill_created_date'] = pd.to_datetime(df['bill_created_date'], errors='coerce')
+        df['hour'] = df['bill_created_date'].dt.hour
+        peak_df = df.groupby('hour', as_index=False).agg({
+            'gross_amount': 'sum',
+            'item_qty': 'sum',
+        }).sort_values('hour')
+        peak_hours = peak_df.rename(columns={'gross_amount': 'revenue', 'item_qty': 'qty'}).to_dict(orient='records')
+
+        item_grouped = df.groupby('item', as_index=False).agg({
+            'gross_amount': 'sum',
+            'item_qty': 'sum',
+        })
+        item_grouped = item_grouped[(item_grouped['gross_amount'] > 0) & (item_grouped['item_qty'] > 0)]
+        top_10 = item_grouped.sort_values('gross_amount', ascending=False).head(10)
+        bottom_10 = item_grouped.sort_values('gross_amount', ascending=True).head(10)
+
+        top_10_items = top_10.rename(columns={'gross_amount': 'revenue', 'item_qty': 'qty'}).to_dict(orient='records')
+        bottom_10_items = bottom_10.rename(columns={'gross_amount': 'revenue', 'item_qty': 'qty'}).to_dict(orient='records')
+        all_items_ranked = item_grouped.sort_values('gross_amount', ascending=False).rename(columns={'gross_amount': 'revenue', 'item_qty': 'qty'}).to_dict(orient='records')
+
+        # Category split — percentage of total gross (all categories)
+        total_query = "SELECT SUM(gross_amount) as total FROM pos_sales WHERE business_date >= %s AND business_date <= %s"
+        total_params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        if outlet:
+            total_query += " AND outlet IN %s"
+            total_params.append(tuple(outlet))
+        total_all_df = pd.read_sql(total_query, conn, params=total_params)
+        total_all_gross = float(total_all_df['total'].iloc[0] or 0)
+
+        food_cats = ('03-Food', 'FC01-Food')
+        bev_cats = ('04-Beverages', 'BC01-Beverages')
+        food_gross = float(df[df['category'].isin(food_cats)]['gross_amount'].sum())
+        bev_gross = float(df[df['category'].isin(bev_cats)]['gross_amount'].sum())
+
+        category_split = [
+            {"category": "Food", "amount": food_gross, "pct": round(food_gross / total_all_gross * 100, 1) if total_all_gross > 0 else 0},
+            {"category": "Beverages", "amount": bev_gross, "pct": round(bev_gross / total_all_gross * 100, 1) if total_all_gross > 0 else 0},
+        ]
+
+        conn.close()
+
+        result = {
+            "success": True,
+            "metrics": metrics,
+            "peak_hours": peak_hours,
+            "top_10_items": top_10_items,
+            "bottom_10_items": bottom_10_items,
+            "all_items": all_items_ranked,
+            "category_split": category_split,
+            "total_all_gross": total_all_gross,
+        }
+        set_cached(ck, result)
+        return result
 
     except HTTPException:
         raise
@@ -503,6 +676,330 @@ async def transform_machine_rate(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/data-availability")
+async def get_data_availability():
+    """Get the date range of available data in each table."""
+    try:
+        ck = cache_key("data-availability")
+        cached = get_cached(ck)
+        if cached:
+            return cached
+
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
+        )
+
+        query = """
+            SELECT
+                'pos_sales' as tbl,
+                MIN(business_date)::date as from_date,
+                MAX(business_date)::date as to_date,
+                COUNT(*) as rows
+            FROM pos_sales WHERE business_date IS NOT NULL
+            UNION ALL
+            SELECT 'bri_transactions', MIN(tgl_trx), MAX(tgl_trx), COUNT(*)
+            FROM bri_transactions WHERE tgl_trx IS NOT NULL
+            UNION ALL
+            SELECT 'bca_transactions', MIN(report_date), MAX(report_date), COUNT(*)
+            FROM bca_transactions WHERE report_date IS NOT NULL
+        """
+        df = pd.read_sql(query, conn)
+        conn.close()
+
+        result = {}
+        for _, row in df.iterrows():
+            # Format dates as dd/mm/yyyy
+            from_fmt = row['from_date'].strftime('%d/%m/%Y') if row['from_date'] else None
+            to_fmt = row['to_date'].strftime('%d/%m/%Y') if row['to_date'] else None
+            result[row['tbl']] = {
+                "from": from_fmt,
+                "to": to_fmt,
+                "latest": to_fmt,  # alias for easier frontend access
+                "rows": int(row['rows']),
+            }
+
+        set_cached(ck, result)
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/discount-report")
+async def get_discount_report(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    outlet: Optional[List[str]] = Query(None, description="Optional outlet filter (multi)"),
+):
+    """Discount Report - breakdown of discounts by date, outlet, category, and item."""
+    try:
+        ck = cache_key("discount-report", start_date, end_date, outlet)
+        cached = get_cached(ck)
+        if cached:
+            return cached
+
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
+        )
+
+        base_where = "business_date IS NOT NULL AND business_date >= %s AND business_date <= %s AND discount > 0"
+        params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        if outlet:
+            base_where += " AND outlet IN %s"
+            params.append(tuple(outlet))
+
+        # Main data - all transactions with discount
+        query = f"""
+            SELECT
+                business_date::date as date,
+                outlet,
+                category,
+                item,
+                gross_amount_excl,
+                discount,
+                net_sales,
+                gross_sales_all_incl
+            FROM pos_sales
+            WHERE {base_where}
+            ORDER BY business_date DESC, outlet, category
+        """
+        df = pd.read_sql(query, conn, params=params)
+
+        if df.empty:
+            conn.close()
+            return {
+                "success": True,
+                "metrics": {"total_discount": 0, "total_gross": 0, "discount_rate": 0, "total_transactions": 0, "avg_discount": 0},
+                "chart_daily": [], "chart_category": [], "chart_outlet": [], "top_discounted_items": [],
+                "all_data": [], "file_base64": "", "total_rows": 0,
+            }
+
+        for col in ['gross_amount_excl', 'discount', 'net_sales', 'gross_sales_all_incl']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        total_discount = float(df['discount'].sum())
+        total_gross = float(df['gross_amount_excl'].sum())
+        discount_rate = round(total_discount / total_gross * 100, 2) if total_gross > 0 else 0
+        total_transactions = len(df)
+        avg_discount = round(total_discount / total_transactions, 2) if total_transactions > 0 else 0
+
+        metrics = {
+            "total_discount": total_discount,
+            "total_gross": total_gross,
+            "discount_rate": discount_rate,
+            "total_transactions": total_transactions,
+            "avg_discount": avg_discount,
+        }
+
+        # Chart: Daily discount trend
+        daily = df.groupby(df['date'].astype(str), as_index=False).agg({
+            'discount': 'sum', 'gross_amount_excl': 'sum'
+        }).sort_values('date')
+        daily['discount_rate'] = (daily['discount'] / daily['gross_amount_excl'] * 100).round(2)
+        chart_daily = daily.rename(columns={'date': 'date', 'discount': 'discount', 'gross_amount_excl': 'gross', 'discount_rate': 'rate'}).to_dict(orient='records')
+
+        # Chart: Discount by category
+        by_category = df.groupby('category', as_index=False).agg({'discount': 'sum', 'gross_amount_excl': 'sum'})
+        by_category['rate'] = (by_category['discount'] / by_category['gross_amount_excl'] * 100).round(2)
+        by_category = by_category.sort_values('discount', ascending=False).head(15)
+        chart_category = by_category.to_dict(orient='records')
+
+        # Chart: Discount by outlet
+        by_outlet = df.groupby('outlet', as_index=False).agg({'discount': 'sum', 'gross_amount_excl': 'sum'})
+        by_outlet['rate'] = (by_outlet['discount'] / by_outlet['gross_amount_excl'] * 100).round(2)
+        by_outlet = by_outlet.sort_values('discount', ascending=False)
+        chart_outlet = by_outlet.to_dict(orient='records')
+
+        # Top discounted items
+        by_item = df.groupby('item', as_index=False).agg({'discount': 'sum', 'gross_amount_excl': 'sum'})
+        by_item['rate'] = (by_item['discount'] / by_item['gross_amount_excl'] * 100).round(2)
+        by_item = by_item.sort_values('discount', ascending=False).head(20)
+        top_discounted_items = by_item.to_dict(orient='records')
+
+        conn.close()
+
+        df['date'] = df['date'].astype(str)
+        all_data = df.to_dict(orient='records')
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Discount Report')
+        file_base64 = base64.b64encode(output.getvalue()).decode('utf-8')
+
+        result = {
+            "success": True,
+            "metrics": metrics,
+            "chart_daily": chart_daily,
+            "chart_category": chart_category,
+            "chart_outlet": chart_outlet,
+            "top_discounted_items": top_discounted_items,
+            "all_data": all_data,
+            "file_base64": file_base64,
+            "total_rows": len(df),
+        }
+        set_cached(ck, result)
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/merchant-bank-report")
+async def get_merchant_bank_report(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    bank: Optional[str] = Query(None, description="Filter by bank: bca or bri"),
+):
+    """Merchant Bank Report - BCA and BRI transaction details with settlement info."""
+    try:
+        ck = cache_key("merchant-bank-report", start_date, end_date, bank)
+        cached = get_cached(ck)
+        if cached:
+            return cached
+
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
+        )
+
+        # BCA transactions
+        bca_df = pd.DataFrame()
+        if not bank or bank == 'bca':
+            bca_query = """
+                SELECT
+                    'BCA' as bank,
+                    process_effective_date as trx_date,
+                    merchant_payment_date as settle_date,
+                    merchant_name,
+                    terminal_id,
+                    card_type,
+                    gross_amount,
+                    mdr_amount,
+                    nett_amount,
+                    transaction_code
+                FROM bca_transactions
+                WHERE process_effective_date >= %s AND process_effective_date <= %s
+                ORDER BY process_effective_date DESC
+            """
+            bca_df = pd.read_sql(bca_query, conn, params=[start_date, end_date])
+
+        # BRI transactions
+        bri_df = pd.DataFrame()
+        if not bank or bank == 'bri':
+            bri_query = """
+                SELECT
+                    'BRI' as bank,
+                    tgl_trx as trx_date,
+                    tgl_setl as settle_date,
+                    nama_merchant as merchant_name,
+                    tid as terminal_id,
+                    tipe as card_type,
+                    amt_trx as gross_amount,
+                    disc_amt as mdr_amount,
+                    net_amt as nett_amount,
+                    principle as transaction_code
+                FROM bri_transactions
+                WHERE tgl_trx >= %s AND tgl_trx <= %s
+                ORDER BY tgl_trx DESC
+            """
+            bri_df = pd.read_sql(bri_query, conn, params=[start_date, end_date])
+
+        conn.close()
+
+        # Combine
+        df = pd.concat([bca_df, bri_df], ignore_index=True)
+
+        if df.empty:
+            return {
+                "success": True,
+                "metrics": {"total_gross": 0, "total_mdr": 0, "total_nett": 0, "mdr_rate": 0, "total_transactions": 0, "bca_total": 0, "bri_total": 0},
+                "chart_daily": [], "chart_by_bank": [], "chart_by_card_type": [], "chart_settlement": [],
+                "all_data": [], "file_base64": "", "total_rows": 0,
+            }
+
+        for col in ['gross_amount', 'mdr_amount', 'nett_amount']:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+        total_gross = float(df['gross_amount'].sum())
+        total_mdr = float(df['mdr_amount'].sum())
+        total_nett = float(df['nett_amount'].sum())
+        mdr_rate = round(total_mdr / total_gross * 100, 2) if total_gross > 0 else 0
+        bca_total = float(df[df['bank'] == 'BCA']['gross_amount'].sum())
+        bri_total = float(df[df['bank'] == 'BRI']['gross_amount'].sum())
+
+        metrics = {
+            "total_gross": total_gross,
+            "total_mdr": total_mdr,
+            "total_nett": total_nett,
+            "mdr_rate": mdr_rate,
+            "total_transactions": len(df),
+            "bca_total": bca_total,
+            "bri_total": bri_total,
+        }
+
+        # Chart: Daily trend
+        df['trx_date'] = pd.to_datetime(df['trx_date'], errors='coerce')
+        daily = df.groupby(df['trx_date'].dt.strftime('%Y-%m-%d'), as_index=False).agg({
+            'gross_amount': 'sum', 'mdr_amount': 'sum', 'nett_amount': 'sum'
+        }).sort_values('trx_date')
+        daily.columns = ['date', 'gross', 'mdr', 'nett']
+        chart_daily = daily.to_dict(orient='records')
+
+        # Chart: By bank
+        by_bank = df.groupby('bank', as_index=False).agg({
+            'gross_amount': 'sum', 'mdr_amount': 'sum', 'nett_amount': 'sum'
+        })
+        by_bank['mdr_rate'] = (by_bank['mdr_amount'] / by_bank['gross_amount'] * 100).round(2)
+        chart_by_bank = by_bank.to_dict(orient='records')
+
+        # Chart: By card type
+        df['card_type'] = df['card_type'].fillna('Unknown').astype(str)
+        by_card = df.groupby('card_type', as_index=False).agg({'gross_amount': 'sum', 'mdr_amount': 'sum'})
+        by_card['mdr_rate'] = (by_card['mdr_amount'] / by_card['gross_amount'] * 100).round(2)
+        by_card = by_card.sort_values('gross_amount', ascending=False).head(10)
+        chart_by_card_type = by_card.to_dict(orient='records')
+
+        # Chart: Settlement timeline (days between trx and settle)
+        df['settle_date'] = pd.to_datetime(df['settle_date'], errors='coerce')
+        df['settle_days'] = (df['settle_date'] - df['trx_date']).dt.days
+        settle_dist = df[df['settle_days'].notna()].groupby('settle_days', as_index=False).agg({'gross_amount': 'sum'})
+        settle_dist = settle_dist[settle_dist['settle_days'] >= 0].sort_values('settle_days').head(15)
+        chart_settlement = settle_dist.rename(columns={'settle_days': 'days', 'gross_amount': 'amount'}).to_dict(orient='records')
+
+        # Format for output
+        df['trx_date'] = df['trx_date'].dt.strftime('%Y-%m-%d')
+        df['settle_date'] = df['settle_date'].dt.strftime('%Y-%m-%d')
+        df = df.drop(columns=['settle_days'], errors='ignore')
+        all_data = df.fillna('').to_dict(orient='records')
+
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Merchant Bank Report')
+        file_base64 = base64.b64encode(output.getvalue()).decode('utf-8')
+
+        result = {
+            "success": True,
+            "metrics": metrics,
+            "chart_daily": chart_daily,
+            "chart_by_bank": chart_by_bank,
+            "chart_by_card_type": chart_by_card_type,
+            "chart_settlement": chart_settlement,
+            "all_data": all_data,
+            "file_base64": file_base64,
+            "total_rows": len(df),
+        }
+        set_cached(ck, result)
+        return result
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/transform/machine-rate-card")
 async def transform_machine_rate_card(file: UploadFile = File(...)):
     if not file.filename.endswith(('.xlsx', '.xls')):
@@ -539,6 +1036,404 @@ async def transform_machine_rate_card(file: UploadFile = File(...)):
 
     except HTTPException:
         raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/combined-report")
+async def get_combined_report(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"),
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    reports: str = Query("sales,discount,merchant", description="Comma-separated: sales,discount,merchant"),
+    outlets: str = Query(None, description="Comma-separated outlet names (empty = all outlets)"),
+):
+    """Generate combined Excel report with multiple sheets matching finance format.
+
+    Every sheet is broken down per store (outlet); results are never collapsed
+    into a single "All Outlets" row. Bank figures (BRI/BCA/Nusapay) are matched
+    to a store via the derived `outlet` column and restricted to ticketing
+    revenue via `kategori = 'TICKET'`.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
+        )
+
+        report_list = [r.strip().lower() for r in reports.split(",")]
+        period_str = f"{start_date.replace('-', '/')} - {end_date.replace('-', '/')}"
+
+        # Optional outlet filter. When omitted, include every outlet, but always
+        # group per outlet so stores are never merged together.
+        if outlets:
+            outlet_list = [o.strip() for o in outlets.split(",") if o.strip()]
+        else:
+            outlet_list = []
+
+        if outlet_list:
+            placeholders = ",".join(["%s"] * len(outlet_list))
+            outlet_filter_sql = f"AND outlet IN ({placeholders})"
+            outlet_params = outlet_list
+        else:
+            outlet_filter_sql = ""
+            outlet_params = []
+
+        # POS item exclusions shared by every POS query (online / non-walk-in).
+        item_exclusions = """
+                          AND LOWER(item) NOT LIKE '%%blibli%%'
+                          AND LOWER(item) NOT LIKE '%%tiketcom%%'
+                          AND LOWER(item) NOT LIKE '%%tiket.com%%'
+                          AND LOWER(item) NOT LIKE '%%tiket com%%'
+                          AND LOWER(item) NOT LIKE '%%website%%'
+                          AND LOWER(item) NOT LIKE '%%activity%%'
+        """
+        ts_params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+
+        output = io.BytesIO()
+        sheets_written = False
+
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+
+            # ===== SALES REPORT SHEET =====
+            if 'sales' in report_list:
+                pos_query = f"""
+                    SELECT
+                        DATE(business_date) as date,
+                        outlet as store,
+                        'Walk In Ticket' as platform,
+                        SUM(gross_amount_excl) as gross_amount_excl,
+                        SUM(discount) as discount,
+                        SUM(net_sales) as net_sales,
+                        SUM(tax) as tax,
+                        SUM(charge) as charge,
+                        SUM(gross_sales_all_incl) as gross_sales_all_incl
+                    FROM pos_sales
+                    WHERE business_date >= %s AND business_date <= %s
+                      {outlet_filter_sql}
+                      AND category IN ('01-Ticketing', 'SNP-TICKET-SPARK Ticket')
+                      {item_exclusions}
+                    GROUP BY DATE(business_date), outlet
+                    ORDER BY DATE(business_date), outlet
+                """
+                pos_df = pd.read_sql(pos_query, conn, params=ts_params + outlet_params)
+
+                # BRI ticketing, per date + outlet
+                bri_query = f"""
+                    SELECT tgl_trx as date, outlet, SUM(amt_trx) as bri
+                    FROM bri_transactions
+                    WHERE tgl_trx IS NOT NULL AND tgl_trx >= %s AND tgl_trx <= %s
+                      AND kategori = 'TICKET'
+                      {outlet_filter_sql}
+                    GROUP BY tgl_trx, outlet
+                """
+                bri_df = pd.read_sql(bri_query, conn, params=[start_date, end_date] + outlet_params)
+
+                # BCA ticketing, real card payments settled/PAID, per date + outlet
+                bca_query = f"""
+                    SELECT process_effective_date as date, outlet, SUM(gross_amount) as bca
+                    FROM bca_transactions
+                    WHERE process_effective_date IS NOT NULL AND process_effective_date >= %s AND process_effective_date <= %s
+                      AND kategori = 'TICKET'
+                      AND card_type <> ''
+                      AND merchant_payment_status = 'PAID'
+                      {outlet_filter_sql}
+                    GROUP BY process_effective_date, outlet
+                """
+                bca_df = pd.read_sql(bca_query, conn, params=[start_date, end_date] + outlet_params)
+
+                # Nusapay: Walk In tickets with QRIS1-QRIS NUSA tender, per date + outlet
+                nusapay_query = f"""
+                    SELECT DATE(business_date) as date, outlet, SUM(gross_sales_all_incl) as nusapay
+                    FROM pos_sales
+                    WHERE business_date >= %s AND business_date <= %s
+                      {outlet_filter_sql}
+                      AND category IN ('01-Ticketing', 'SNP-TICKET-SPARK Ticket')
+                      AND tender = 'QRIS1-QRIS NUSA'
+                      {item_exclusions}
+                    GROUP BY DATE(business_date), outlet
+                """
+                nusapay_df = pd.read_sql(nusapay_query, conn, params=ts_params + outlet_params)
+
+                if not pos_df.empty:
+                    pos_df['date'] = pd.to_datetime(pos_df['date'])
+                    if not bri_df.empty:
+                        bri_df['date'] = pd.to_datetime(bri_df['date'])
+                        pos_df = pos_df.merge(
+                            bri_df.rename(columns={'outlet': 'store'}), on=['date', 'store'], how='left')
+                    else:
+                        pos_df['bri'] = 0
+                    if not bca_df.empty:
+                        bca_df['date'] = pd.to_datetime(bca_df['date'])
+                        pos_df = pos_df.merge(
+                            bca_df.rename(columns={'outlet': 'store'}), on=['date', 'store'], how='left')
+                    else:
+                        pos_df['bca'] = 0
+                    if not nusapay_df.empty:
+                        nusapay_df['date'] = pd.to_datetime(nusapay_df['date'])
+                        pos_df = pos_df.merge(
+                            nusapay_df.rename(columns={'outlet': 'store'}), on=['date', 'store'], how='left')
+                    else:
+                        pos_df['nusapay'] = 0
+
+                    for col in ('bri', 'bca', 'nusapay'):
+                        if col not in pos_df.columns:
+                            pos_df[col] = 0
+                    pos_df = pos_df.fillna(0)
+                    pos_df['deposit'] = 0
+                    pos_df['total_bank'] = pos_df['bri'] + pos_df['bca'] + pos_df['nusapay'] + pos_df['deposit']
+                    # Diff = POS gross (all incl) - bank receipts. Negative means
+                    # bank received more than POS recorded (matches finance format).
+                    pos_df['diff'] = pos_df['gross_sales_all_incl'] - pos_df['total_bank']
+                    pos_df = pos_df.sort_values(['date', 'store']).reset_index(drop=True)
+
+                    sales_rows = []
+                    sales_rows.append(['DAILY SALES REPORT'] + [None] * 14)
+                    sales_rows.append(['Periode :', period_str] + [None] * 13)
+                    sales_rows.append([None] * 15)
+                    sales_rows.append([None, None, None, 'POS', None, None, None, None, None, 'Payment Method / Merchant Report'] + [None] * 5)
+                    sales_rows.append(['Date', 'Store', 'Platform', 'Gross Amount Excl.', 'Discount', 'Net Sales', 'Tax', 'Charge', 'Gross Sales (All incl)', 'BRI', 'BCA', 'Nusapay', 'Deposit', 'Total', 'Diff'])
+
+                    for _, row in pos_df.iterrows():
+                        sales_rows.append([
+                            row['date'].strftime('%Y-%m-%d'),
+                            row['store'],
+                            row['platform'],
+                            row['gross_amount_excl'],
+                            row['discount'],
+                            row['net_sales'],
+                            row['tax'],
+                            row['charge'],
+                            row['gross_sales_all_incl'],
+                            row['bri'],
+                            row['bca'],
+                            row['nusapay'],
+                            row['deposit'],
+                            row['total_bank'],
+                            row['diff'],
+                        ])
+
+                    sales_rows.append([None] * 15)
+                    sales_rows.append([None] * 15)
+                    sales_rows.append([
+                        None, 'TOTAL', None,
+                        pos_df['gross_amount_excl'].sum(),
+                        pos_df['discount'].sum(),
+                        pos_df['net_sales'].sum(),
+                        pos_df['tax'].sum(),
+                        pos_df['charge'].sum(),
+                        pos_df['gross_sales_all_incl'].sum(),
+                        pos_df['bri'].sum(),
+                        pos_df['bca'].sum(),
+                        pos_df['nusapay'].sum(),
+                        pos_df['deposit'].sum(),
+                        pos_df['total_bank'].sum(),
+                        pos_df['diff'].sum(),
+                    ])
+
+                    sales_sheet = pd.DataFrame(sales_rows)
+                    sales_sheet.to_excel(writer, sheet_name='Sales Report', index=False, header=False)
+                    sheets_written = True
+
+            # ===== DISCOUNT REPORT SHEET =====
+            if 'discount' in report_list:
+                discount_query = f"""
+                    SELECT
+                        business_date as date,
+                        outlet as store,
+                        'Walk In Ticket' as platform,
+                        bill_no,
+                        ROUND(SUM(discount * 1.1)) as total_discount,
+                        MAX(remarks) as remark
+                    FROM pos_sales
+                    WHERE business_date >= %s AND business_date <= %s
+                      {outlet_filter_sql}
+                      AND category IN ('01-Ticketing', 'SNP-TICKET-SPARK Ticket')
+                      {item_exclusions}
+                      AND discount > 0
+                    GROUP BY business_date, outlet, bill_no
+                    ORDER BY business_date, outlet, bill_no
+                """
+                discount_df = pd.read_sql(discount_query, conn, params=ts_params + outlet_params)
+
+                discount_rows = []
+                discount_rows.append(['DISCOUNT REPORT'] + [None] * 5)
+                discount_rows.append(['Periode :', period_str] + [None] * 4)
+                discount_rows.append([None] * 6)
+                discount_rows.append(['Date', 'Store', 'Platform', 'No. Bill', 'Total Discount', 'Remark'])
+
+                for _, row in discount_df.iterrows():
+                    date_val = row['date']
+                    if isinstance(date_val, pd.Timestamp):
+                        date_val = date_val.strftime('%Y-%m-%d')
+                    discount_rows.append([
+                        date_val,
+                        row['store'],
+                        row['platform'],
+                        row['bill_no'],
+                        row['total_discount'],
+                        row['remark'] if pd.notna(row['remark']) else None,
+                    ])
+
+                discount_sheet = pd.DataFrame(discount_rows)
+                discount_sheet.to_excel(writer, sheet_name='Discount Report', index=False, header=False)
+                sheets_written = True
+
+            # ===== MERCHANT REPORT SHEET =====
+            if 'merchant' in report_list:
+                # BRI ticketing per date + outlet
+                bri_merchant_query = f"""
+                    SELECT
+                        tgl_trx as date,
+                        outlet as store,
+                        SUM(amt_trx) as amount,
+                        SUM(disc_amt) as mdr
+                    FROM bri_transactions
+                    WHERE tgl_trx IS NOT NULL AND tgl_trx >= %s AND tgl_trx <= %s
+                      AND kategori = 'TICKET'
+                      {outlet_filter_sql}
+                    GROUP BY tgl_trx, outlet
+                """
+                bri_merchant = pd.read_sql(bri_merchant_query, conn, params=[start_date, end_date] + outlet_params)
+                if not bri_merchant.empty:
+                    bri_merchant['date'] = pd.to_datetime(bri_merchant['date'])
+                    bri_merchant['net'] = bri_merchant['amount'] - bri_merchant['mdr']
+
+                # BCA ticketing, real card payments settled/PAID, per date + outlet
+                bca_merchant_query = f"""
+                    SELECT
+                        process_effective_date as date,
+                        outlet as store,
+                        SUM(gross_amount) as amount,
+                        SUM(mdr_amount) as mdr,
+                        SUM(nett_amount) as net
+                    FROM bca_transactions
+                    WHERE process_effective_date IS NOT NULL AND process_effective_date >= %s AND process_effective_date <= %s
+                      AND kategori = 'TICKET'
+                      AND card_type <> ''
+                      AND merchant_payment_status = 'PAID'
+                      {outlet_filter_sql}
+                    GROUP BY process_effective_date, outlet
+                """
+                bca_merchant = pd.read_sql(bca_merchant_query, conn, params=[start_date, end_date] + outlet_params)
+                if not bca_merchant.empty:
+                    bca_merchant['date'] = pd.to_datetime(bca_merchant['date'])
+
+                # Nusapay: Walk In tickets with QRIS1-QRIS NUSA tender - MDR rate 0.7%, per date + outlet
+                nusapay_merchant_query = f"""
+                    SELECT
+                        DATE(business_date) as date,
+                        outlet as store,
+                        SUM(gross_sales_all_incl) as amount
+                    FROM pos_sales
+                    WHERE business_date >= %s AND business_date <= %s
+                      {outlet_filter_sql}
+                      AND category IN ('01-Ticketing', 'SNP-TICKET-SPARK Ticket')
+                      AND tender = 'QRIS1-QRIS NUSA'
+                      {item_exclusions}
+                    GROUP BY DATE(business_date), outlet
+                """
+                nusapay_merchant = pd.read_sql(nusapay_merchant_query, conn, params=ts_params + outlet_params)
+                if not nusapay_merchant.empty:
+                    nusapay_merchant['date'] = pd.to_datetime(nusapay_merchant['date'])
+                    nusapay_merchant['mdr'] = nusapay_merchant['amount'] * 0.007  # 0.7% MDR
+                    nusapay_merchant['net'] = nusapay_merchant['amount'] - nusapay_merchant['mdr']
+
+                # Union of (date, store) keys across all three sources.
+                keys = set()
+                for dfm in (bri_merchant, bca_merchant, nusapay_merchant):
+                    if not dfm.empty:
+                        keys.update(zip(dfm['date'].tolist(), dfm['store'].tolist()))
+                keys = sorted(keys, key=lambda k: (k[0], k[1]))
+
+                def _lookup(dfm, date, store):
+                    if dfm.empty:
+                        return None
+                    sub = dfm[(dfm['date'] == date) & (dfm['store'] == store)]
+                    return sub.iloc[0] if len(sub) > 0 else None
+
+                merchant_rows = []
+                merchant_rows.append(['MERCHANT REPORT'] + [None] * 17)
+                merchant_rows.append(['Periode :', period_str] + [None] * 16)
+                merchant_rows.append([None] * 18)
+                merchant_rows.append(['Date', 'Store', 'Platform', 'BRI', None, None, 'BCA', None, None, 'NUSAPAY', None, None, 'DEPOSIT', None, None, 'TOTAL', None, None])
+                merchant_rows.append([None, None, None, 'Amont Transaction', 'MDR', 'Net Amount', 'Amont Transaction', 'MDR', 'Net Amount', 'Amont Transaction', 'MDR', 'Net Amount', 'Amont Transaction', 'MDR', 'Net Amount', 'Amont Transaction', 'MDR', 'Net Amount'])
+
+                totals = {'bri_amt': 0, 'bri_mdr': 0, 'bri_net': 0, 'bca_amt': 0, 'bca_mdr': 0, 'bca_net': 0, 'nusapay_amt': 0, 'nusapay_mdr': 0, 'nusapay_net': 0}
+
+                for date, store in keys:
+                    bri_row = _lookup(bri_merchant, date, store)
+                    bca_row = _lookup(bca_merchant, date, store)
+                    nusapay_row = _lookup(nusapay_merchant, date, store)
+
+                    bri_amt = float(bri_row['amount']) if bri_row is not None else 0
+                    bri_mdr = float(bri_row['mdr']) if bri_row is not None else 0
+                    bri_net = float(bri_row['net']) if bri_row is not None else 0
+                    bca_amt = float(bca_row['amount']) if bca_row is not None else 0
+                    bca_mdr = float(bca_row['mdr']) if bca_row is not None else 0
+                    bca_net = float(bca_row['net']) if bca_row is not None else 0
+                    nusapay_amt = float(nusapay_row['amount']) if nusapay_row is not None else 0
+                    nusapay_mdr = float(nusapay_row['mdr']) if nusapay_row is not None else 0
+                    nusapay_net = float(nusapay_row['net']) if nusapay_row is not None else 0
+
+                    totals['bri_amt'] += bri_amt
+                    totals['bri_mdr'] += bri_mdr
+                    totals['bri_net'] += bri_net
+                    totals['bca_amt'] += bca_amt
+                    totals['bca_mdr'] += bca_mdr
+                    totals['bca_net'] += bca_net
+                    totals['nusapay_amt'] += nusapay_amt
+                    totals['nusapay_mdr'] += nusapay_mdr
+                    totals['nusapay_net'] += nusapay_net
+
+                    total_amt = bri_amt + bca_amt + nusapay_amt
+                    total_mdr = bri_mdr + bca_mdr + nusapay_mdr
+                    total_net = bri_net + bca_net + nusapay_net
+
+                    merchant_rows.append([
+                        date.strftime('%Y-%m-%d'),
+                        store,
+                        'Walk In Ticket',
+                        bri_amt, bri_mdr, bri_net,
+                        bca_amt, bca_mdr, bca_net,
+                        nusapay_amt, nusapay_mdr, nusapay_net,
+                        0, 0, 0,
+                        total_amt, total_mdr, total_net,
+                    ])
+
+                merchant_rows.append([None] * 18)
+                merchant_rows.append([None] * 18)
+                total_all_amt = totals['bri_amt'] + totals['bca_amt'] + totals['nusapay_amt']
+                total_all_mdr = totals['bri_mdr'] + totals['bca_mdr'] + totals['nusapay_mdr']
+                total_all_net = totals['bri_net'] + totals['bca_net'] + totals['nusapay_net']
+                merchant_rows.append([
+                    None, 'TOTAL', None,
+                    totals['bri_amt'], totals['bri_mdr'], totals['bri_net'],
+                    totals['bca_amt'], totals['bca_mdr'], totals['bca_net'],
+                    totals['nusapay_amt'], totals['nusapay_mdr'], totals['nusapay_net'],
+                    0, 0, 0,
+                    total_all_amt, total_all_mdr, total_all_net,
+                ])
+
+                merchant_sheet = pd.DataFrame(merchant_rows)
+                merchant_sheet.to_excel(writer, sheet_name='Merchant Report', index=False, header=False)
+                sheets_written = True
+
+            # Add empty sheet if no sheets were written
+            if not sheets_written:
+                empty_df = pd.DataFrame([['No data available']])
+                empty_df.to_excel(writer, sheet_name='Info', index=False, header=False)
+
+        output.seek(0)
+        file_base64 = base64.b64encode(output.read()).decode('utf-8')
+        conn.close()
+
+        return {
+            "success": True,
+            "file_base64": file_base64,
+            "filename": f"Report_Mooboard_{start_date}_to_{end_date}.xlsx",
+        }
+
     except Exception as e:
         import traceback
         traceback.print_exc()
