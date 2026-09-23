@@ -1,6 +1,6 @@
-# CPCM Analytics Dashboard
+# MooBoard Analytics Dashboard
 
-Sales analytics dashboard built with Next.js 16 and a FastAPI backend for data transformation.
+Sales analytics dashboard for Cow Play Cow Moo — built with Next.js 16 and a FastAPI backend.
 
 ## Tech Stack
 
@@ -8,15 +8,31 @@ Sales analytics dashboard built with Next.js 16 and a FastAPI backend for data t
 |---|---|
 | Frontend | Next.js 16, React 19, TypeScript, Tailwind CSS v4, shadcn/ui, Recharts |
 | Backend | Python 3.11, FastAPI, Pandas |
-| Auth | NextAuth v5 (JWT + credentials) |
-| Database | SQLite (via Prisma ORM) |
+| Auth | NextAuth v5 (JWT + credentials, bcryptjs) |
+| Database | PostgreSQL (POS/bank data), SQLite via Prisma (user auth) |
+| Cache | Redis 7 (gzip compressed, allkeys-lru, 2GB) |
+| Reverse Proxy | Caddy (auto HTTPS, Let's Encrypt) |
 | Deployment | Docker Compose |
 
 ---
 
-## Features Usage
+## Features
 
-- **Machine Rate Tracker**: Upload primary Excel data containing machine inputs and ticket outputs to view analytics. Optionally upload a secondary Card/Ticket Leak Excel file using the "Ticket Machine & Card" tab to right-join data by Machine Name and evaluate the overall adjusted Rate `(Ticket Out + Ticket Leak) / Coin In`.
+- **Ticketing Report**: Gross Amount, Net Sales, Discount, Tax metrics with period comparison. Daily trend, category/source breakdown, payment methods pie chart, busiest days analysis.
+- **POS vs Bank Reconciliation**: Daily comparison of POS gross sales vs BCA + BRI bank transactions.
+- **F&B Report**: Revenue metrics, peak hours chart, Food vs Beverages split (% of total sales), top/bottom 10 items with "See all" view.
+- **Machine Rate Tracker**: Upload Excel to analyze machine ticket out vs coin in rates.
+- **Shared Filters**: Date range + multi-select outlet filter applied across all report sections.
+- **Redis Caching**: 10-minute TTL, gzip compressed — cached requests respond in < 1s.
+
+---
+
+## Domain Setup (Caddy)
+
+| Domain | Service |
+|---|---|
+| `mooboard.id` | Frontend (Next.js :3000) |
+| `api.mooboard.id` | Backend (FastAPI :8000) |
 
 ---
 
@@ -52,10 +68,11 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-### Accessing the App
+### Services
 
-- Frontend: `http://<SERVER_IP>:3000`
-- Backend API: `http://<SERVER_IP>:8000`
+- Frontend: `https://mooboard.id`
+- Backend API: `https://api.mooboard.id`
+- Redis: internal (port 6379, not exposed externally)
 
 ---
 
@@ -64,13 +81,8 @@ docker compose logs -f
 | Variable | Required | Description | Example |
 |---|---|---|---|
 | `AUTH_SECRET` | Yes | Secret key to sign NextAuth JWT tokens. | Generate via: `openssl rand -base64 32` |
-| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend URL accessed from the client browser. | `http://216.72.172:8000` |
-| `SEED_USER_EMAIL` | No | Initial admin email (default: admin@cpcm.com). | `admin@cpcm.com` |
-| `SEED_USER_PASSWORD` | No | Initial admin password (default: admin123). | `admin123` |
-| `SEED_USER_NAME` | No | Initial admin name (default: Admin). | `Admin` |
-
-### Note on AUTH_SECRET
-NextAuth relies on `AUTH_SECRET` to sign JWT tokens. A fallback is temporarily hardcoded for local development, but deploying without a strong secret compromises authentication. Always generate a random 32-character string for production use.
+| `AUTH_URL` | Yes | Public URL of the frontend (for NextAuth). | `https://mooboard.id` |
+| `NEXT_PUBLIC_BACKEND_URL` | Yes | Backend URL accessed from the client browser. | `https://api.mooboard.id` |
 
 ---
 
@@ -83,7 +95,7 @@ npm install
 npx prisma db push
 npm run dev
 ```
-The frontend will be available at `http://localhost:3000`.
+Frontend at `http://localhost:3000`.
 
 ### Backend Setup
 
@@ -91,10 +103,10 @@ The frontend will be available at `http://localhost:3000`.
 cd backend
 python -m venv venv
 source venv/bin/activate
-pip install fastapi uvicorn pandas openpyxl python-multipart
+pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
-The backend will run on `http://127.0.0.1:8000`.
+Backend at `http://localhost:8000`.
 
 ---
 
@@ -115,7 +127,7 @@ Stop all containers:
 docker compose down
 ```
 
-Stop and reset database volume:
+Flush Redis cache:
 ```bash
-docker compose down -v
+docker exec cpcm-analytics_dashboard-redis-1 redis-cli FLUSHALL
 ```

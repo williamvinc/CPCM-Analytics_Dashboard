@@ -4,14 +4,19 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-http://217.216.72.172:8000}
+        NEXT_PUBLIC_BACKEND_URL: ${NEXT_PUBLIC_BACKEND_URL:-https://api.mooboard.id}
     ports:
       - "3000:3000"
     environment:
-      - AUTH_URL=${AUTH_URL:-http://217.216.72.172:3000}
+      - AUTH_URL=${AUTH_URL:-https://mooboard.id}
       - AUTH_SECRET=${AUTH_SECRET:-change-me-in-production}
       - AUTH_TRUST_HOST=true
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - DATABASE_URL=file:/app/data/prod.db
+      - FINANCE_API_URL=${FINANCE_API_URL:-https://financeapi.cpcm.my.id}
+      - FINANCE_API_USER=${FINANCE_API_USER:-admin}
+      - FINANCE_API_PASS=${FINANCE_API_PASS:-qwerty123}
     volumes:
       - sqlite_data:/app/data
     depends_on:
@@ -30,7 +35,20 @@ services:
       - DB_NAME=mooboard
       - DB_USER=mooboard
       - DB_PASSWORD=MooBoard123!
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
     restart: unless-stopped
 
 volumes:
   sqlite_data:
+  redis_data:

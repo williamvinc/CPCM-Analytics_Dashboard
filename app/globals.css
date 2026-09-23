@@ -137,3 +137,8 @@
   80% { transform: scale(1.03) rotate(0.5deg); }
   100% { transform: scale(1) rotate(0deg); }
 }
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
