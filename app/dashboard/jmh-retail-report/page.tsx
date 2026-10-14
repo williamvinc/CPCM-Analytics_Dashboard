@@ -144,14 +144,14 @@ export default function JmhRetailReportPage() {
                   <CardDescription className="flex items-center gap-2">
                     <ShoppingBag className="w-4 h-4 text-muted-foreground" />
                     Total POS Retail
-                    <InfoTooltip text="SUM(Gross Amount) untuk kategori: 02-Retail, CPP-RETAIL, SNP-RETAIL" />
+                    <InfoTooltip text="SUM(Gross Amount) untuk kategori: 02-Retail" />
                   </CardDescription>
                   <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
                     {formatRpFull(jmhReconciliation.totals.pos)}
                   </CardTitle>
                 </CardHeader>
                 <CardFooter className="text-sm text-muted-foreground">
-                  Category: 02-Retail, CPP-RETAIL, SNP-RETAIL
+                  Category: 02-Retail
                 </CardFooter>
               </Card>
 

@@ -16,7 +16,7 @@ import { PlusCircle, Download, Loader2, Store } from "lucide-react"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import { DateRange } from "react-day-picker"
 
-type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'activity' | 'tiketcom' | 'newtiketcom'
+type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'newsales' | 'activity' | 'tiketcom' | 'newtiketcom'
 
 interface ReportOption {
   id: ReportType
@@ -33,13 +33,18 @@ const REPORT_OPTIONS: ReportOption[] = [
   { id: 'sales', label: 'Sales Report', description: 'Daily POS sales with bank reconciliation' },
   { id: 'discount', label: 'Discount Report', description: 'Discount details per transaction' },
   { id: 'merchant', label: 'Merchant Report', description: 'BCA & BRI transactions with MDR' },
-  { id: 'cafe', label: 'Cafe Sales Report', description: 'Garfield & Mr. Porter cafe sales with F&B split' },
+  { id: 'cafe', label: 'Cafe Sales Report', description: 'F&B format lama (Food & Beverage) - periode sebelum Sep 2026' },
+  { id: 'newsales', label: 'FNB New Report', description: 'F&B format baru (Packaging & BNI) - periode Sep 2026 ke atas' },
   { id: 'activity', label: 'Activity Sales Report', description: 'Activity sales (Mrs. Puff, Pup Pup Boogie, DIY, etc.)' },
-  { id: 'tiketcom', label: 'Tiket.com Report', description: 'Tiket.com sales with calculated prices (detail + rekap)' },
-  { id: 'newtiketcom', label: 'New Tiket.com Report', description: 'New Tiket.com from new_tiket_transactions (with status)' },
+  { id: 'tiketcom', label: 'Tiket.com POS Report', description: 'Tiket.com sales with calculated prices (detail + rekap)' },
+  { id: 'newtiketcom', label: 'All Transaction Tiket.com Report', description: 'New Tiket.com from new_tiket_transactions (with status)' },
 ]
 
 const ALL_OUTLETS = '__all__'
+
+// Format F&B berganti mulai September 2026 (Category 2 + kolom Packaging).
+// Harus sama dengan FNB_NEW_FORMAT_START di backend.
+const FNB_NEW_FORMAT_START = '2026-09-01'
 
 export function QuickExport() {
   const today = new Date()
@@ -47,7 +52,7 @@ export function QuickExport() {
   const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0)
 
   const [open, setOpen] = React.useState(false)
-  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'activity', 'tiketcom', 'newtiketcom'])
+  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'activity', 'tiketcom', 'newtiketcom'])
   const [loading, setLoading] = React.useState(false)
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>({
     from: prevMonthStart,
@@ -119,6 +124,22 @@ export function QuickExport() {
     }
   }, [selectedChannel])
 
+  // Format F&B terikat periode (sama dengan aturan backend): sebelum Sep 2026 pakai
+  // 'Cafe Sales Report', Sep 2026 ke atas pakai 'FNB New Report'. Kalau salah satu
+  // sedang dipilih, pilihan itu ditukar otomatis supaya tidak ada sheet yang dikirim
+  // dengan format yang tidak cocok periodenya.
+  const fnbPeriodIsNew = dateRange?.to ? formatDateStr(dateRange.to) >= FNB_NEW_FORMAT_START : false
+
+  React.useEffect(() => {
+    const wanted: ReportType = fnbPeriodIsNew ? 'newsales' : 'cafe'
+    const unwanted: ReportType = fnbPeriodIsNew ? 'cafe' : 'newsales'
+    setSelectedReports(prev => {
+      const hasFnb = prev.includes('cafe') || prev.includes('newsales')
+      if (!hasFnb || (prev.includes(wanted) && !prev.includes(unwanted))) return prev
+      return [...prev.filter(r => r !== unwanted), wanted]
+    })
+  }, [fnbPeriodIsNew])
+
   const toggleReport = (reportId: ReportType) => {
     setSelectedReports(prev =>
       prev.includes(reportId)
@@ -131,7 +152,7 @@ export function QuickExport() {
     if (selectedChannel === 'retail_jmh') {
       setSelectedReports(['sales', 'discount', 'merchant'])
     } else {
-      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'activity', 'tiketcom', 'newtiketcom'])
+      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'activity', 'tiketcom', 'newtiketcom'])
     }
   }
 
@@ -387,6 +408,12 @@ export function QuickExport() {
               </div>
             ))}
           </div>
+          <p className="text-xs text-muted-foreground">
+            Format F&B mengikuti periode:{' '}
+            {fnbPeriodIsNew
+              ? "'FNB New Report' (Sep 2026 ke atas)"
+              : "'Cafe Sales Report' (sebelum Sep 2026)"}
+          </p>
         </div>
 
         {/* Progress Section */}
