@@ -159,15 +159,15 @@ export default function JmhRetailReportPage() {
                 <CardHeader>
                   <CardDescription className="flex items-center gap-2">
                     <CreditCard className="w-4 h-4 text-muted-foreground" />
-                    Total Bank (BCA + BRI)
-                    <InfoTooltip text="SUM(BCA JMH) + SUM(BRI JMH)" />
+                    Total Bank (BCA + BRI + BNI)
+                    <InfoTooltip text="SUM(BCA JMH) + SUM(BRI JMH) + SUM(BNI JMH)" />
                   </CardDescription>
                   <CardTitle className="text-2xl font-semibold tabular-nums @[250px]/card:text-3xl">
                     {formatRpFull(jmhReconciliation.totals.bank_total)}
                   </CardTitle>
                 </CardHeader>
                 <CardFooter className="text-sm text-muted-foreground">
-                  BCA: {formatRpFull(jmhReconciliation.totals.bca)} | BRI: {formatRpFull(jmhReconciliation.totals.bri)}
+                  BCA: {formatRpFull(jmhReconciliation.totals.bca)} | BRI: {formatRpFull(jmhReconciliation.totals.bri)} | BNI: {formatRpFull(jmhReconciliation.totals.bni ?? 0)}
                 </CardFooter>
               </Card>
 
@@ -190,7 +190,7 @@ export default function JmhRetailReportPage() {
             <Card className="shadow-sm">
               <CardHeader>
                 <CardTitle>JMH Retail POS vs Bank</CardTitle>
-                <CardDescription>Daily reconciliation BCA JMH + BRI JMH vs POS Retail</CardDescription>
+                <CardDescription>Daily reconciliation BCA JMH + BRI JMH + BNI JMH vs POS Retail</CardDescription>
               </CardHeader>
               <CardContent className="p-0">
                 <div className="overflow-x-auto">
@@ -202,6 +202,7 @@ export default function JmhRetailReportPage() {
                           <th className="px-4 py-3 text-right font-medium text-muted-foreground">POS Retail</th>
                           <th className="px-4 py-3 text-right font-medium text-muted-foreground">BCA JMH</th>
                           <th className="px-4 py-3 text-right font-medium text-muted-foreground">BRI JMH</th>
+                          <th className="px-4 py-3 text-right font-medium text-muted-foreground">BNI JMH</th>
                           <th className="px-4 py-3 text-right font-medium text-muted-foreground">Total Bank</th>
                           <th className="px-4 py-3 text-right font-medium text-muted-foreground">Difference</th>
                         </tr>
@@ -213,6 +214,7 @@ export default function JmhRetailReportPage() {
                             <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.pos)}</td>
                             <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bca)}</td>
                             <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bri)}</td>
+                            <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bni)}</td>
                             <td className="px-4 py-2.5 text-right tabular-nums">{formatRpFull(row.bank_total)}</td>
                             <td className={`px-4 py-2.5 text-right tabular-nums font-semibold ${row.difference < 0 ? 'text-red-500' : ''}`}>
                               {formatRpFull(row.difference)}
@@ -226,6 +228,7 @@ export default function JmhRetailReportPage() {
                           <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(jmhReconciliation.totals.pos)}</td>
                           <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(jmhReconciliation.totals.bca)}</td>
                           <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(jmhReconciliation.totals.bri)}</td>
+                          <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(jmhReconciliation.totals.bni ?? 0)}</td>
                           <td className="px-4 py-3 text-right tabular-nums">{formatRpFull(jmhReconciliation.totals.bank_total)}</td>
                           <td className={`px-4 py-3 text-right tabular-nums font-bold ${jmhReconciliation.totals.difference < 0 ? 'text-red-500' : ''}`}>
                             {formatRpFull(jmhReconciliation.totals.difference)}

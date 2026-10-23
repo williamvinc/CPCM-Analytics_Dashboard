@@ -16,7 +16,7 @@ import { PlusCircle, Download, Loader2, Store } from "lucide-react"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import { DateRange } from "react-day-picker"
 
-type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'newsales' | 'activity' | 'tiketcom' | 'newtiketcom'
+type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'newsales' | 'fnbmerchant' | 'activity' | 'activitymerchant' | 'tiketcom' | 'newtiketcom'
 
 interface ReportOption {
   id: ReportType
@@ -32,10 +32,12 @@ interface OutletOption {
 const REPORT_OPTIONS: ReportOption[] = [
   { id: 'sales', label: 'Sales Report', description: 'Daily POS sales with bank reconciliation' },
   { id: 'discount', label: 'Discount Report', description: 'Discount details per transaction' },
-  { id: 'merchant', label: 'Merchant Report', description: 'BCA & BRI transactions with MDR' },
+  { id: 'merchant', label: 'Walk In Merchant Report', description: 'BCA, BRI & BNI transactions with MDR' },
   { id: 'cafe', label: 'Cafe Sales Report', description: 'F&B format lama (Food & Beverage) - periode sebelum Sep 2026' },
   { id: 'newsales', label: 'FNB New Report', description: 'F&B format baru (Packaging & BNI) - periode Sep 2026 ke atas' },
+  { id: 'fnbmerchant', label: 'FNB Merchant Report', description: 'F&B settlement per merchant (BRI, BCA, BNI, Nusapay, Deposit) with MDR' },
   { id: 'activity', label: 'Activity Sales Report', description: 'Activity sales (Mrs. Puff, Pup Pup Boogie, DIY, etc.)' },
+  { id: 'activitymerchant', label: 'Activity Merchant Report', description: 'Activity settlement per merchant (BRI, BCA, Nusapay, Deposit) with MDR' },
   { id: 'tiketcom', label: 'Tiket.com POS Report', description: 'Tiket.com sales with calculated prices (detail + rekap)' },
   { id: 'newtiketcom', label: 'All Transaction Tiket.com Report', description: 'New Tiket.com from new_tiket_transactions (with status)' },
 ]
@@ -52,7 +54,7 @@ export function QuickExport() {
   const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0)
 
   const [open, setOpen] = React.useState(false)
-  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'activity', 'tiketcom', 'newtiketcom'])
+  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom'])
   const [loading, setLoading] = React.useState(false)
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>({
     from: prevMonthStart,
@@ -152,7 +154,7 @@ export function QuickExport() {
     if (selectedChannel === 'retail_jmh') {
       setSelectedReports(['sales', 'discount', 'merchant'])
     } else {
-      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'activity', 'tiketcom', 'newtiketcom'])
+      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom'])
     }
   }
 

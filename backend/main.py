@@ -800,7 +800,7 @@ async def get_reconciliation(
         deposit_query += " GROUP BY DATE(business_date) ORDER BY date"
         deposit_df = pd.read_sql(deposit_query, conn, params=deposit_params)
 
-        # Voucher from POS tender (matches VOUCHER-Discount Value and combined tenders)
+        # Voucher: Tender Details (nominal per tender per bill) dengan fallback POS
         voucher_query = f"""
             SELECT DATE(business_date) as date, SUM(gross_sales_all_incl) as voucher
             FROM pos_sales
@@ -814,6 +814,32 @@ async def get_reconciliation(
             voucher_params.append(tuple(outlet))
         voucher_query += " GROUP BY DATE(business_date) ORDER BY date"
         voucher_df = pd.read_sql(voucher_query, conn, params=voucher_params)
+
+        voucher_tender_query = f"""
+            SELECT business_date as date, SUM(tender_amount) as voucher
+            FROM pos_tender_details
+            WHERE business_date >= %s AND business_date <= %s
+              AND LOWER(tender) LIKE '%%voucher%%'
+        """
+        voucher_tender_params = [start_date, end_date]
+        if outlet:
+            voucher_tender_query += " AND outlet IN %s"
+            voucher_tender_params.append(tuple(outlet))
+        voucher_tender_query += " GROUP BY business_date ORDER BY date"
+        try:
+            voucher_tender_df = pd.read_sql(
+                voucher_tender_query, conn, params=voucher_tender_params
+            )
+        except Exception as e:
+            logger.warning("Tender Details voucher tidak tersedia, fallback ke POS: %s", e)
+            voucher_tender_df = pd.DataFrame()
+
+        if not voucher_tender_df.empty:
+            voucher_df['date'] = pd.to_datetime(voucher_df['date'])
+            voucher_tender_df['date'] = pd.to_datetime(voucher_tender_df['date'])
+            voucher_df = pd.concat(
+                [voucher_df, voucher_tender_df], ignore_index=True
+            ).drop_duplicates(subset=['date'], keep='last')
 
         conn.close()
 
@@ -1997,6 +2023,54 @@ async def get_retail_reconciliation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def build_item_summary_sheet(item_rows, title, period_label):
+    """Susun sheet Item Summary: Item Name | [Store] | Quantity | Sales.
+
+    item_rows: iterable dict berisi item, qty, sales, dan opsional store.
+    Kolom Store hanya ditambahkan kalau datanya mencakup lebih dari satu
+    store, supaya laporan satu outlet tetap berbentuk sama dengan contoh
+    finance (Item Name | Quantity | Sales).
+    """
+    rows = [r for r in item_rows if r.get('item')]
+    has_store = len({str(r.get('store') or '') for r in rows}) > 1
+    headers = ['Item Name'] + (['Store'] if has_store else []) + ['Quantity', 'Sales']
+    sheet_rows = [
+        [title] + [None] * (len(headers) - 1),
+        ['Periode :', period_label] + [None] * (len(headers) - 2),
+        [None] * len(headers),
+        headers,
+    ]
+
+    def to_int(value):
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return 0
+
+    rows.sort(key=lambda r: (-to_int(r.get('sales')), str(r.get('item'))))
+    # Total dihitung dari nilai mentah (bukan dari baris yang sudah dibulatkan)
+    # supaya angkanya sama persis dengan total di sheet utamanya.
+    total_qty = 0.0
+    total_sales = 0.0
+    for row in rows:
+        qty = to_int(row.get('qty'))
+        sales = to_int(row.get('sales'))
+        total_qty += float(row.get('qty') or 0)
+        total_sales += float(row.get('sales') or 0)
+        line = [row.get('item')]
+        if has_store:
+            line.append(row.get('store'))
+        line.extend([qty, sales])
+        sheet_rows.append(line)
+
+    sheet_rows.append([None] * len(headers))
+    sheet_rows.append(
+        ['TOTAL'] + ([None] if has_store else [])
+        + [int(round(total_qty)), int(round(total_sales))]
+    )
+    return pd.DataFrame(sheet_rows)
+
+
 @app.get("/api/combined-report")
 async def get_combined_report(
     start_date: str = Query(..., description="Start date YYYY-MM-DD"),
@@ -2157,8 +2231,24 @@ async def get_combined_report(
                     """
                     bca_df = pd.read_sql(bca_query, conn, params=[start_date, end_date])
 
-                    # No BNI, Nusapay, Deposit, Voucher for retail_jmh
-                    bni_df = pd.DataFrame()
+                    # BNI JMH for retail (tabel baru: bni_jmh_transactions)
+                    bni_query = """
+                        SELECT trx_date as date,
+                               CASE WHEN merchant_name ILIKE '%%SPARK%%' THEN 'SNP'
+                                    WHEN merchant_name ILIKE '%%CTZ%%' THEN 'CPP'
+                                    ELSE merchant_name END as outlet,
+                               SUM(amount) as bni
+                        FROM bni_jmh_transactions
+                        WHERE trx_date IS NOT NULL AND trx_date >= %s AND trx_date <= %s
+                          AND merchant_name ILIKE '%%MERCH%%'
+                        GROUP BY trx_date,
+                                 CASE WHEN merchant_name ILIKE '%%SPARK%%' THEN 'SNP'
+                                      WHEN merchant_name ILIKE '%%CTZ%%' THEN 'CPP'
+                                      ELSE merchant_name END
+                    """
+                    bni_df = pd.read_sql(bni_query, conn, params=[start_date, end_date])
+
+                    # No Nusapay, Deposit, Voucher for retail_jmh
                     nusapay_df = pd.DataFrame()
                     deposit_df = pd.DataFrame()
                     voucher_df = pd.DataFrame()
@@ -2260,8 +2350,11 @@ async def get_combined_report(
                     """
                     deposit_df = pd.read_sql(deposit_query, conn, params=ts_params + outlet_params)
 
-                    # Voucher: tickets with VOUCHER-Voucher Value tender, per date + outlet
-                    voucher_query = f"""
+                    # Voucher: Tender Details menyimpan nominal per tender per bill,
+                    # jadi bill yang dibayar campuran (mis. QRIS + VOUCHER) tidak
+                    # dihitung penuh sebagai voucher seperti di pos_sales. Fallback
+                    # ke pos_sales untuk tanggal/outlet yang belum ada datanya.
+                    voucher_pos_query = f"""
                         SELECT DATE(business_date) as date,
                                CASE WHEN outlet ILIKE '%%Park Nickelodeon%%' THEN 'SNP'
                                     WHEN outlet ILIKE '%%Carstensz%%' THEN 'CPP'
@@ -2277,7 +2370,43 @@ async def get_combined_report(
                                     WHEN outlet ILIKE '%%Carstensz%%' THEN 'CPP'
                                     ELSE outlet END
                     """
-                    voucher_df = pd.read_sql(voucher_query, conn, params=ts_params + outlet_params)
+                    voucher_df = pd.read_sql(voucher_pos_query, conn, params=ts_params + outlet_params)
+
+                    voucher_tender_query = f"""
+                        SELECT business_date as date,
+                               CASE WHEN outlet ILIKE '%%Park Nickelodeon%%' THEN 'SNP'
+                                    WHEN outlet ILIKE '%%Carstensz%%' THEN 'CPP'
+                                    ELSE outlet END as outlet,
+                               SUM(tender_amount) as voucher
+                        FROM pos_tender_details
+                        WHERE business_date >= %s AND business_date <= %s
+                          {outlet_filter_sql}
+                          AND LOWER(tender) LIKE '%%voucher%%'
+                        GROUP BY business_date, CASE WHEN outlet ILIKE '%%Park Nickelodeon%%' THEN 'SNP'
+                                    WHEN outlet ILIKE '%%Carstensz%%' THEN 'CPP'
+                                    ELSE outlet END
+                    """
+                    try:
+                        voucher_tender_df = pd.read_sql(
+                            voucher_tender_query,
+                            conn,
+                            params=[start_date, end_date] + outlet_params,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Tender Details voucher tidak tersedia, fallback ke POS: %s", e
+                        )
+                        voucher_tender_df = pd.DataFrame()
+
+                    if not voucher_tender_df.empty:
+                        voucher_df['date'] = pd.to_datetime(voucher_df['date'])
+                        voucher_tender_df['date'] = pd.to_datetime(voucher_tender_df['date'])
+                        # Tender Details menang untuk (date, outlet) yang ada;
+                        # sisanya tetap memakai angka POS.
+                        voucher_df = pd.concat(
+                            [voucher_df, voucher_tender_df[['date', 'outlet', 'voucher']]],
+                            ignore_index=True,
+                        ).drop_duplicates(subset=['date', 'outlet'], keep='last')
 
                 if not pos_df.empty:
                     pos_df['date'] = pd.to_datetime(pos_df['date'])
@@ -2328,12 +2457,12 @@ async def get_combined_report(
 
                     sales_rows = []
                     if channel == 'retail_jmh':
-                        # Simplified header for Retail JMH - only BCA JMH and BRI JMH
-                        sales_rows.append(['DAILY SALES REPORT - RETAIL (JMH)'] + [None] * 11)
-                        sales_rows.append(['Periode :', period_str] + [None] * 10)
-                        sales_rows.append([None] * 12)
-                        sales_rows.append([None, None, None, 'POS', None, None, None, None, None, 'Bank JMH'] + [None] * 2)
-                        sales_rows.append(['Date', 'Store', 'Platform', 'Gross Amount Excl.', 'Discount', 'Net Sales', 'Tax', 'Charge', 'Gross Sales (All incl)', 'BCA JMH', 'BRI JMH', 'Total', 'Diff'])
+                        # Simplified header for Retail JMH - BCA JMH, BRI JMH, BNI JMH
+                        sales_rows.append(['DAILY SALES REPORT - RETAIL (JMH)'] + [None] * 13)
+                        sales_rows.append(['Periode :', period_str] + [None] * 12)
+                        sales_rows.append([None] * 14)
+                        sales_rows.append([None, None, None, 'POS', None, None, None, None, None, 'Bank JMH'] + [None] * 4)
+                        sales_rows.append(['Date', 'Store', 'Platform', 'Gross Amount Excl.', 'Discount', 'Net Sales', 'Tax', 'Charge', 'Gross Sales (All incl)', 'BCA JMH', 'BRI JMH', 'BNI JMH', 'Total', 'Diff'])
 
                         for _, row in pos_df.iterrows():
                             sales_rows.append([
@@ -2348,12 +2477,13 @@ async def get_combined_report(
                                 row['gross_sales_all_incl'],
                                 row['bca'],
                                 row['bri'],
-                                row['bca'] + row['bri'],
-                                row['gross_sales_all_incl'] - (row['bca'] + row['bri']),
+                                row['bni'],
+                                row['bca'] + row['bri'] + row['bni'],
+                                row['gross_sales_all_incl'] - (row['bca'] + row['bri'] + row['bni']),
                             ])
 
-                        sales_rows.append([None] * 13)
-                        sales_rows.append([None] * 13)
+                        sales_rows.append([None] * 14)
+                        sales_rows.append([None] * 14)
                         sales_rows.append([
                             None, 'TOTAL', None,
                             pos_df['gross_amount_excl'].sum(),
@@ -2364,8 +2494,9 @@ async def get_combined_report(
                             pos_df['gross_sales_all_incl'].sum(),
                             pos_df['bca'].sum(),
                             pos_df['bri'].sum(),
-                            pos_df['bca'].sum() + pos_df['bri'].sum(),
-                            pos_df['gross_sales_all_incl'].sum() - (pos_df['bca'].sum() + pos_df['bri'].sum()),
+                            pos_df['bni'].sum(),
+                            pos_df['bca'].sum() + pos_df['bri'].sum() + pos_df['bni'].sum(),
+                            pos_df['gross_sales_all_incl'].sum() - (pos_df['bca'].sum() + pos_df['bri'].sum() + pos_df['bni'].sum()),
                         ])
                     else:
                         # Original header for other channels
@@ -2419,6 +2550,36 @@ async def get_combined_report(
                     sales_sheet = pd.DataFrame(sales_rows)
                     sales_sheet.to_excel(writer, sheet_name='Sales Report', index=False, header=False)
                     sheets_written = True
+
+                    # ===== SALES ITEM SUMMARY (sheet tambahan) =====
+                    # Agregasi item-level dengan filter yang sama persis dengan
+                    # sheet Sales Report, jadi total Sales = total Gross Sales
+                    # (All incl) di sheet utamanya.
+                    sales_item_query = f"""
+                        SELECT
+                            CASE WHEN outlet ILIKE '%%Park Nickelodeon%%' THEN 'SNP'
+                                 WHEN outlet ILIKE '%%Carstensz%%' THEN 'CPP'
+                                 ELSE outlet END as store,
+                            item,
+                            SUM(item_qty) as qty,
+                            SUM(gross_sales_all_incl) as sales
+                        FROM pos_sales
+                        WHERE business_date >= %s AND business_date <= %s
+                          {outlet_filter_sql}
+                          {category_filter}
+                          {item_filter}
+                        GROUP BY 1, item
+                    """
+                    sales_item_df = pd.read_sql(
+                        sales_item_query, conn, params=ts_params + outlet_params)
+                    item_summary_sheet = build_item_summary_sheet(
+                        sales_item_df.to_dict('records'),
+                        f'Item Summary {platform_label}',
+                        period_str,
+                    )
+                    item_summary_sheet.to_excel(
+                        writer, sheet_name='Item Summary Sales',
+                        index=False, header=False)
 
             # ===== DISCOUNT REPORT SHEET =====
             if 'discount' in report_list:
@@ -2474,7 +2635,7 @@ async def get_combined_report(
             # ===== MERCHANT REPORT SHEET =====
             if 'merchant' in report_list:
                 if channel == 'retail_jmh':
-                    # Merchant Report for Retail JMH - only BCA JMH and BRI JMH
+                    # Merchant Report for Retail JMH - BCA JMH, BRI JMH, BNI JMH
                     bri_merchant_query = """
                         SELECT
                             tgl_trx as date,
@@ -2520,9 +2681,31 @@ async def get_combined_report(
                     if not bca_merchant.empty:
                         bca_merchant['date'] = pd.to_datetime(bca_merchant['date'])
 
+                    # BNI JMH (tabel baru bni_jmh_transactions)
+                    bni_merchant_query = """
+                        SELECT
+                            trx_date as date,
+                            CASE WHEN merchant_name ILIKE '%%SPARK%%' THEN 'SNP'
+                                 WHEN merchant_name ILIKE '%%CTZ%%' THEN 'CPP'
+                                 ELSE merchant_name END as store,
+                            SUM(amount) as amount,
+                            SUM(disc_amount) as mdr,
+                            SUM(nett_amount) as net
+                        FROM bni_jmh_transactions
+                        WHERE trx_date IS NOT NULL AND trx_date >= %s AND trx_date <= %s
+                          AND merchant_name ILIKE '%%MERCH%%'
+                        GROUP BY trx_date,
+                                 CASE WHEN merchant_name ILIKE '%%SPARK%%' THEN 'SNP'
+                                      WHEN merchant_name ILIKE '%%CTZ%%' THEN 'CPP'
+                                      ELSE merchant_name END
+                    """
+                    bni_merchant = pd.read_sql(bni_merchant_query, conn, params=[start_date, end_date])
+                    if not bni_merchant.empty:
+                        bni_merchant['date'] = pd.to_datetime(bni_merchant['date'])
+
                     # Union keys
                     keys = set()
-                    for dfm in (bri_merchant, bca_merchant):
+                    for dfm in (bri_merchant, bca_merchant, bni_merchant):
                         if not dfm.empty:
                             keys.update(zip(dfm['date'].tolist(), dfm['store'].tolist()))
                     keys = sorted(keys, key=lambda k: (k[0], k[1]))
@@ -2534,17 +2717,22 @@ async def get_combined_report(
                         return sub.iloc[0] if len(sub) > 0 else None
 
                     merchant_rows = []
-                    merchant_rows.append(['MERCHANT REPORT - RETAIL (JMH)'] + [None] * 11)
-                    merchant_rows.append(['Periode :', period_str] + [None] * 10)
-                    merchant_rows.append([None] * 12)
-                    merchant_rows.append(['Date', 'Store', 'Platform', 'BCA JMH', None, None, 'BRI JMH', None, None, 'TOTAL', None, None])
-                    merchant_rows.append([None, None, None, 'Amount', 'MDR', 'Net Amount', 'Amount', 'MDR', 'Net Amount', 'Amount', 'MDR', 'Net Amount'])
+                    merchant_rows.append(['MERCHANT REPORT - RETAIL (JMH)'] + [None] * 14)
+                    merchant_rows.append(['Periode :', period_str] + [None] * 13)
+                    merchant_rows.append([None] * 15)
+                    merchant_rows.append(['Date', 'Store', 'Platform', 'BCA JMH', None, None, 'BRI JMH', None, None, 'BNI JMH', None, None, 'TOTAL', None, None])
+                    merchant_rows.append([None, None, None, 'Amount', 'MDR', 'Net Amount', 'Amount', 'MDR', 'Net Amount', 'Amount', 'MDR', 'Net Amount', 'Amount', 'MDR', 'Net Amount'])
 
-                    totals = {'bca_amt': 0, 'bca_mdr': 0, 'bca_net': 0, 'bri_amt': 0, 'bri_mdr': 0, 'bri_net': 0}
+                    totals = {
+                        'bca_amt': 0, 'bca_mdr': 0, 'bca_net': 0,
+                        'bri_amt': 0, 'bri_mdr': 0, 'bri_net': 0,
+                        'bni_amt': 0, 'bni_mdr': 0, 'bni_net': 0,
+                    }
 
                     for date, store in keys:
                         bri_row = _lookup_jmh(bri_merchant, date, store)
                         bca_row = _lookup_jmh(bca_merchant, date, store)
+                        bni_row = _lookup_jmh(bni_merchant, date, store)
 
                         bri_amt = float(bri_row['amount']) if bri_row is not None else 0
                         bri_mdr = float(bri_row['mdr']) if bri_row is not None else 0
@@ -2552,6 +2740,9 @@ async def get_combined_report(
                         bca_amt = float(bca_row['amount']) if bca_row is not None else 0
                         bca_mdr = float(bca_row['mdr']) if bca_row is not None else 0
                         bca_net = float(bca_row['net']) if bca_row is not None else 0
+                        bni_amt = float(bni_row['amount']) if bni_row is not None else 0
+                        bni_mdr = float(bni_row['mdr']) if bni_row is not None else 0
+                        bni_net = float(bni_row['net']) if bni_row is not None else 0
 
                         totals['bri_amt'] += bri_amt
                         totals['bri_mdr'] += bri_mdr
@@ -2559,10 +2750,13 @@ async def get_combined_report(
                         totals['bca_amt'] += bca_amt
                         totals['bca_mdr'] += bca_mdr
                         totals['bca_net'] += bca_net
+                        totals['bni_amt'] += bni_amt
+                        totals['bni_mdr'] += bni_mdr
+                        totals['bni_net'] += bni_net
 
-                        total_amt = bca_amt + bri_amt
-                        total_mdr = bca_mdr + bri_mdr
-                        total_net = bca_net + bri_net
+                        total_amt = bca_amt + bri_amt + bni_amt
+                        total_mdr = bca_mdr + bri_mdr + bni_mdr
+                        total_net = bca_net + bri_net + bni_net
 
                         merchant_rows.append([
                             date.strftime('%Y-%m-%d'),
@@ -2570,18 +2764,20 @@ async def get_combined_report(
                             'Retail (JMH)',
                             bca_amt, bca_mdr, bca_net,
                             bri_amt, bri_mdr, bri_net,
+                            bni_amt, bni_mdr, bni_net,
                             total_amt, total_mdr, total_net,
                         ])
 
-                    merchant_rows.append([None] * 12)
-                    merchant_rows.append([None] * 12)
-                    total_all_amt = totals['bca_amt'] + totals['bri_amt']
-                    total_all_mdr = totals['bca_mdr'] + totals['bri_mdr']
-                    total_all_net = totals['bca_net'] + totals['bri_net']
+                    merchant_rows.append([None] * 15)
+                    merchant_rows.append([None] * 15)
+                    total_all_amt = totals['bca_amt'] + totals['bri_amt'] + totals['bni_amt']
+                    total_all_mdr = totals['bca_mdr'] + totals['bri_mdr'] + totals['bni_mdr']
+                    total_all_net = totals['bca_net'] + totals['bri_net'] + totals['bni_net']
                     merchant_rows.append([
                         None, 'TOTAL', None,
                         totals['bca_amt'], totals['bca_mdr'], totals['bca_net'],
                         totals['bri_amt'], totals['bri_mdr'], totals['bri_net'],
+                        totals['bni_amt'], totals['bni_mdr'], totals['bni_net'],
                         total_all_amt, total_all_mdr, total_all_net,
                     ])
 
@@ -2782,11 +2978,34 @@ async def get_combined_report(
             #   'newsales' -> 'FNB New Report', 25 kolom, periode Sep 2026 ke atas
             # Sheet yang periodenya tidak cocok dilewati, dan alasannya ditulis di sheet 'Info'.
             fnb_wants = [r for r in ('newsales', 'cafe') if r in report_list]
-            if fnb_wants:
+            want_fnb_merchant = 'fnbmerchant' in report_list
+            if fnb_wants or want_fnb_merchant:
                 fnb_period_is_new = end_date >= FNB_NEW_FORMAT_START
                 # Cafe mapping (lihat FNB_BUCKETS di atas): outlet -> nama cafe + bucket F&B
                 cafe_config = FNB_BUCKETS
 
+                # ===== FNB MERCHANT REPORT (sheet terpisah) =====
+                # BRI/BCA/BNI memakai MDR asli dari file merchant (net = amount - mdr,
+                # sudah diverifikasi). Nusapay dari POS tidak menyimpan MDR -> 0,7%.
+                # Tidak terikat format F&B lama/baru; hanya periode yang menentukan data.
+                fnb_merchant_rows = []
+                fnb_merchant_rows.append(['MERCHANT REPORT'] + [None] * 20)
+                fnb_merchant_rows.append(['Periode :', period_str] + [None] * 19)
+                fnb_merchant_rows.append([None] * 21)
+                fnb_merchant_rows.append(['Date', 'Store', 'Platform', 'BRI', None, None, 'BCA', None, None, 'BNI', None, None, 'NUSAPAY', None, None, 'DEPOSIT', None, None, 'TOTAL', None, None])
+                fnb_merchant_rows.append([None, None, None, 'Amount Transaction', 'MDR', 'Net Amount', 'Amount Transaction', 'MDR', 'Net Amount', 'Amount Transaction', 'MDR', 'Net Amount', 'Amount Transaction', 'MDR', 'Net Amount', 'Amount Transaction', 'MDR', 'Net Amount', 'Amount Transaction', 'MDR', 'Net Amount'])
+
+                totals_fnb_merchant = {
+                    'bri_amt': 0, 'bri_mdr': 0, 'bri_net': 0,
+                    'bca_amt': 0, 'bca_mdr': 0, 'bca_net': 0,
+                    'bni_amt': 0, 'bni_mdr': 0, 'bni_net': 0,
+                    'nusapay_amt': 0, 'nusapay_mdr': 0, 'nusapay_net': 0,
+                    'deposit_amt': 0,
+                }
+
+                # Baris item-level untuk sheet Item Summary FNB (dikumpulkan
+                # dari semua outlet di dalam loop di bawah).
+                fnb_item_rows = []
                 cafe_rows = []
                 cafe_rows.append(['DAILY SALES REPORT'] + [None] * 24)
                 cafe_rows.append(['Periode :', period_str] + [None] * 23)
@@ -2851,9 +3070,37 @@ async def get_combined_report(
                     bev_df = bucket_df(bev_clause, bev_params)
                     pkg_df = bucket_df(pkg_clause, pkg_params)
 
+                    # Item-level untuk sheet Item Summary FNB: kategori sama
+                    # dengan sheet FNB (Food + Beverage + Packaging).
+                    fnb_item_query = f"""
+                        SELECT item,
+                               SUM(item_qty) as qty,
+                               SUM(gross_sales_all_incl) as sales
+                        FROM pos_sales
+                        WHERE business_date >= %s AND business_date <= %s
+                          AND outlet = %s
+                          AND {all_clause}
+                        GROUP BY item
+                    """
+                    fnb_item_df = pd.read_sql(
+                        fnb_item_query, conn,
+                        params=[start_date + " 00:00:00", end_date + " 23:59:59",
+                                outlet_key] + all_params,
+                    )
+                    for _, item_row in fnb_item_df.iterrows():
+                        fnb_item_rows.append({
+                            'item': item_row['item'],
+                            'store': cafe_name,
+                            'qty': item_row['qty'],
+                            'sales': item_row['sales'],
+                        })
+
                     # BRI FNB for this outlet
                     bri_cafe_query = """
-                        SELECT tgl_trx as date, SUM(amt_trx) as bri
+                        SELECT tgl_trx as date,
+                               SUM(amt_trx) as bri,
+                               COALESCE(SUM(disc_amt), 0) as bri_mdr,
+                               COALESCE(SUM(net_amt), 0) as bri_net
                         FROM bri_transactions
                         WHERE tgl_trx IS NOT NULL AND tgl_trx >= %s AND tgl_trx <= %s
                           AND kategori = 'FNB' AND outlet = %s
@@ -2863,7 +3110,10 @@ async def get_combined_report(
 
                     # BCA FNB for this outlet
                     bca_cafe_query = """
-                        SELECT process_effective_date as date, SUM(gross_amount) as bca
+                        SELECT process_effective_date as date,
+                               SUM(gross_amount) as bca,
+                               COALESCE(SUM(mdr_amount), 0) as bca_mdr,
+                               COALESCE(SUM(nett_amount), 0) as bca_net
                         FROM bca_transactions
                         WHERE process_effective_date IS NOT NULL AND process_effective_date >= %s AND process_effective_date <= %s
                           AND kategori = 'FNB' AND outlet = %s
@@ -2874,7 +3124,10 @@ async def get_combined_report(
 
                     # BNI FNB for this outlet
                     bni_cafe_query = """
-                        SELECT trx_date as date, SUM(amount) as bni
+                        SELECT trx_date as date,
+                               SUM(amount) as bni,
+                               COALESCE(SUM(disc_amount), 0) as bni_mdr,
+                               COALESCE(SUM(nett_amount), 0) as bni_net
                         FROM bni_transactions
                         WHERE trx_date IS NOT NULL AND trx_date >= %s AND trx_date <= %s
                           AND kategori = 'FNB' AND outlet = %s
@@ -2932,6 +3185,16 @@ async def get_combined_report(
                         if not df.empty and 'date' in df.columns:
                             df['date'] = pd.to_datetime(df['date'])
 
+                    # MDR/Net merchant bisa NULL kalau seluruh nilai di grup NULL
+                    for dfm, mdr_cols in (
+                        (bri_cafe_df, ('bri', 'bri_mdr', 'bri_net')),
+                        (bca_cafe_df, ('bca', 'bca_mdr', 'bca_net')),
+                        (bni_cafe_df, ('bni', 'bni_mdr', 'bni_net')),
+                    ):
+                        for col in mdr_cols:
+                            if col in dfm.columns:
+                                dfm[col] = dfm[col].fillna(0).astype(float)
+
                     # Get all dates from food, bev or packaging
                     all_dates = set()
                     if not food_df.empty:
@@ -2940,6 +3203,11 @@ async def get_combined_report(
                         all_dates.update(bev_df['date'].tolist())
                     if not pkg_df.empty:
                         all_dates.update(pkg_df['date'].tolist())
+                    # Tanggal merchant bisa tidak punya baris POS (mis. settlement beda hari)
+                    if want_fnb_merchant:
+                        for dfm in (bri_cafe_df, bca_cafe_df, bni_cafe_df, nusapay_cafe_df, deposit_cafe_df):
+                            if not dfm.empty:
+                                all_dates.update(dfm['date'].tolist())
                     all_dates = sorted(all_dates)
 
                     for dt in all_dates:
@@ -2982,6 +3250,51 @@ async def get_combined_report(
                         nusapay_val = float(nusapay_row['nusapay'].iloc[0]) if len(nusapay_row) > 0 else 0
                         deposit_val = float(deposit_row['deposit'].iloc[0]) if len(deposit_row) > 0 else 0
                         voucher_val = float(voucher_row['voucher'].iloc[0]) if len(voucher_row) > 0 else 0
+
+                        # ===== FNB MERCHANT REPORT (sheet terpisah) =====
+                        if want_fnb_merchant:
+                            bri_mdr = float(bri_row['bri_mdr'].iloc[0]) if len(bri_row) > 0 else 0
+                            bri_net = float(bri_row['bri_net'].iloc[0]) if len(bri_row) > 0 else 0
+                            bca_mdr = float(bca_row['bca_mdr'].iloc[0]) if len(bca_row) > 0 else 0
+                            bca_net = float(bca_row['bca_net'].iloc[0]) if len(bca_row) > 0 else 0
+                            bni_mdr = float(bni_row['bni_mdr'].iloc[0]) if len(bni_row) > 0 else 0
+                            bni_net = float(bni_row['bni_net'].iloc[0]) if len(bni_row) > 0 else 0
+                            nusapay_mdr = nusapay_val * 0.007  # POS tidak menyimpan MDR Nusapay
+                            nusapay_net = nusapay_val - nusapay_mdr
+
+                            merchant_amt = bri_val + bca_val + bni_val + nusapay_val + deposit_val
+                            if merchant_amt > 0:
+                                merchant_mdr = bri_mdr + bca_mdr + bni_mdr + nusapay_mdr
+                                merchant_net = bri_net + bca_net + bni_net + nusapay_net + deposit_val
+                                for key, val in (
+                                    ('bri_amt', bri_val), ('bri_mdr', bri_mdr), ('bri_net', bri_net),
+                                    ('bca_amt', bca_val), ('bca_mdr', bca_mdr), ('bca_net', bca_net),
+                                    ('bni_amt', bni_val), ('bni_mdr', bni_mdr), ('bni_net', bni_net),
+                                    ('nusapay_amt', nusapay_val), ('nusapay_mdr', nusapay_mdr),
+                                    ('nusapay_net', nusapay_net), ('deposit_amt', deposit_val),
+                                ):
+                                    totals_fnb_merchant[key] += val
+                                fnb_merchant_rows.append([
+                                    dt.strftime('%Y-%m-%d'),
+                                    cafe_name,
+                                    'Food and Beverage',
+                                    bri_val if bri_val else None,
+                                    bri_mdr if bri_mdr else None,
+                                    bri_net if bri_net else None,
+                                    bca_val if bca_val else None,
+                                    bca_mdr if bca_mdr else None,
+                                    bca_net if bca_net else None,
+                                    bni_val if bni_val else None,
+                                    bni_mdr if bni_mdr else None,
+                                    bni_net if bni_net else None,
+                                    nusapay_val if nusapay_val else None,
+                                    nusapay_mdr if nusapay_mdr else None,
+                                    nusapay_net if nusapay_net else None,
+                                    deposit_val if deposit_val else None,
+                                    None,
+                                    deposit_val if deposit_val else None,
+                                    merchant_amt, merchant_mdr, merchant_net,
+                                ])
 
                         bank_total = bri_val + bca_val + bni_val + nusapay_val
                         diff = gross_all - bank_total - deposit_val - voucher_val
@@ -3068,8 +3381,45 @@ async def get_combined_report(
                         'format lama tidak bisa dibuat. Pakai sheet FNB New Report.',
                     ))
 
+                # ===== FNB ITEM SUMMARY (sheet tambahan) =====
+                fnb_sales_sheet_written = (
+                    ('newsales' in fnb_wants and fnb_period_is_new)
+                    or ('cafe' in fnb_wants and not fnb_period_is_new)
+                )
+                if fnb_item_rows and fnb_sales_sheet_written:
+                    fnb_item_sheet = build_item_summary_sheet(
+                        fnb_item_rows, 'Item Summary FNB', period_str)
+                    fnb_item_sheet.to_excel(
+                        writer, sheet_name='Item Summary FNB',
+                        index=False, header=False)
+                    sheets_written = True
+
+                # ===== FNB MERCHANT REPORT (sheet terpisah) =====
+                if want_fnb_merchant:
+                    total_m_amt = (totals_fnb_merchant['bri_amt'] + totals_fnb_merchant['bca_amt']
+                                   + totals_fnb_merchant['bni_amt'] + totals_fnb_merchant['nusapay_amt']
+                                   + totals_fnb_merchant['deposit_amt'])
+                    total_m_mdr = (totals_fnb_merchant['bri_mdr'] + totals_fnb_merchant['bca_mdr']
+                                   + totals_fnb_merchant['bni_mdr'] + totals_fnb_merchant['nusapay_mdr'])
+                    total_m_net = (totals_fnb_merchant['bri_net'] + totals_fnb_merchant['bca_net']
+                                   + totals_fnb_merchant['bni_net'] + totals_fnb_merchant['nusapay_net']
+                                   + totals_fnb_merchant['deposit_amt'])
+                    fnb_merchant_rows.append([None] * 21)
+                    fnb_merchant_rows.append([
+                        None, 'TOTAL', None,
+                        totals_fnb_merchant['bri_amt'], totals_fnb_merchant['bri_mdr'], totals_fnb_merchant['bri_net'],
+                        totals_fnb_merchant['bca_amt'], totals_fnb_merchant['bca_mdr'], totals_fnb_merchant['bca_net'],
+                        totals_fnb_merchant['bni_amt'], totals_fnb_merchant['bni_mdr'], totals_fnb_merchant['bni_net'],
+                        totals_fnb_merchant['nusapay_amt'], totals_fnb_merchant['nusapay_mdr'], totals_fnb_merchant['nusapay_net'],
+                        totals_fnb_merchant['deposit_amt'], 0, totals_fnb_merchant['deposit_amt'],
+                        total_m_amt, total_m_mdr, total_m_net,
+                    ])
+                    fnb_merchant_sheet = pd.DataFrame(fnb_merchant_rows)
+                    fnb_merchant_sheet.to_excel(writer, sheet_name='FNB Merchant Report', index=False, header=False)
+                    sheets_written = True
+
             # ===== ACTIVITY SALES REPORT SHEET =====
-            if 'activity' in report_list:
+            if 'activity' in report_list or 'activitymerchant' in report_list:
                 # Activity item patterns
                 activity_patterns = {
                     'mrs_puff': r'0101112004|puf-sim',
@@ -3110,6 +3460,9 @@ async def get_combined_report(
                     'deposit': 0, 'voucher': 0
                 }
 
+                # Baris item-level untuk sheet Item Summary Activity.
+                activity_item_rows = []
+
                 outlets_list_activity = ['OUTLET01-Park Nickelodeon', 'OUTLET02-Nickelodeon Theme Park Carstensz Mall']
                 if outlet_list:
                     outlets_list_activity = [o for o in outlets_list_activity if o in outlet_list]
@@ -3139,6 +3492,33 @@ async def get_combined_report(
                         if not act_df.empty:
                             act_df['date'] = pd.to_datetime(act_df['date'])
                         activity_data[act_key] = act_df
+
+                    # Item-level untuk sheet Item Summary Activity: pola item
+                    # sama dengan kolom activity di sheet utamanya.
+                    activity_item_query = """
+                        SELECT item,
+                               SUM(item_qty) as qty,
+                               SUM(gross_sales_all_incl) as sales
+                        FROM pos_sales
+                        WHERE business_date >= %s AND business_date <= %s
+                          AND outlet = %s
+                          AND (LOWER(item) ~ %s OR LOWER(item) ~ %s OR LOWER(item) ~ %s
+                               OR LOWER(item) ~ %s OR LOWER(item) ~ %s)
+                        GROUP BY item
+                    """
+                    activity_item_df = pd.read_sql(activity_item_query, conn, params=[
+                        start_date + " 00:00:00", end_date + " 23:59:59", outlet_key,
+                        activity_patterns['mrs_puff'], activity_patterns['pup_pup_boogie'],
+                        activity_patterns['diy_activity'], activity_patterns['photo_printing'],
+                        activity_patterns['coin_changer']
+                    ])
+                    for _, item_row in activity_item_df.iterrows():
+                        activity_item_rows.append({
+                            'item': item_row['item'],
+                            'store': outlet_key,
+                            'qty': item_row['qty'],
+                            'sales': item_row['sales'],
+                        })
 
                     # Nusapay for activity items
                     nusapay_act_query = """
@@ -3406,9 +3786,20 @@ async def get_combined_report(
                     total_diff
                 ])
 
-                activity_sheet = pd.DataFrame(activity_rows)
-                activity_sheet.to_excel(writer, sheet_name='Activity Sales Report', index=False, header=False)
-                sheets_written = True
+                # Activity Sales Report dan Activity Merchant Report dipisah:
+                # masing-masing opsi Quick Export hanya menulis sheet-nya sendiri.
+                if 'activity' in report_list:
+                    activity_sheet = pd.DataFrame(activity_rows)
+                    activity_sheet.to_excel(writer, sheet_name='Activity Sales Report', index=False, header=False)
+                    sheets_written = True
+
+                    # ===== ACTIVITY ITEM SUMMARY (sheet tambahan) =====
+                    if activity_item_rows:
+                        activity_item_sheet = build_item_summary_sheet(
+                            activity_item_rows, 'Item Summary Activity', period_str)
+                        activity_item_sheet.to_excel(
+                            writer, sheet_name='Item Summary Activity',
+                            index=False, header=False)
 
                 # ===== ACTIVITY MERCHANT REPORT SHEET =====
                 activity_merchant_rows = []
@@ -3580,8 +3971,10 @@ async def get_combined_report(
                     total_all_net
                 ])
 
-                activity_merchant_sheet = pd.DataFrame(activity_merchant_rows)
-                activity_merchant_sheet.to_excel(writer, sheet_name='Activity Merchant Report', index=False, header=False)
+                if 'activitymerchant' in report_list:
+                    activity_merchant_sheet = pd.DataFrame(activity_merchant_rows)
+                    activity_merchant_sheet.to_excel(writer, sheet_name='Activity Merchant Report', index=False, header=False)
+                    sheets_written = True
 
             # ===== TIKET.COM REPORT SHEET =====
             if 'tiketcom' in report_list:
@@ -3597,6 +3990,17 @@ async def get_combined_report(
                         'gross_all_incl': float(row['gross_sales_all_incl']),
                     }
 
+                # Filter item mengikuti isi tiketcom_price_list, bukan prefix 'TIK-'.
+                # Sejak Okt 2026 ada item tiket.com yang tidak berawalan TIK-
+                # (Pup-tastic Dessert Treat, Yum-Yum Bonus). Dengan cara ini item
+                # baru cukup ditambah ke price list, tanpa perlu ubah query.
+                if price_lookup:
+                    tiketcom_item_filter = " OR ".join(["item LIKE %s"] * len(price_lookup))
+                    tiketcom_item_params = [p + "%" for p in price_lookup.keys()]
+                else:
+                    tiketcom_item_filter = "FALSE"
+                    tiketcom_item_params = []
+
                 # Query POS for tiket.com items
                 tiketcom_query = f"""
                     SELECT
@@ -3608,13 +4012,16 @@ async def get_combined_report(
                         item_qty,
                         remarks
                     FROM pos_sales
-                    WHERE (LOWER(item) LIKE '%%tiket%%com%%' OR LOWER(item) LIKE '%%tiket.com%%')
-                      AND item LIKE 'TIK-%%'
+                    WHERE ({tiketcom_item_filter})
                       AND business_date >= %s AND business_date <= %s
                       {outlet_filter_sql}
                     ORDER BY business_date, outlet, item
                 """
-                tiketcom_df = pd.read_sql(tiketcom_query, conn, params=ts_params + outlet_params)
+                tiketcom_df = pd.read_sql(
+                    tiketcom_query,
+                    conn,
+                    params=tiketcom_item_params + ts_params + outlet_params,
+                )
 
                 def get_discount_pct(remarks):
                     """Extract discount percentage from remarks. Returns 0 if no discount found."""
@@ -3755,6 +4162,22 @@ async def get_combined_report(
                     rekap_sheet = pd.DataFrame(rekap_sheet_rows)
                     rekap_sheet.to_excel(writer, sheet_name='Tiketcom Rekapitulasi', index=False, header=False)
                     sheets_written = True
+
+                    # ===== TIKET.COM ITEM SUMMARY (sheet tambahan) =====
+                    # Agregasi dari detail transaksi yang sama, jadi total Sales
+                    # = total Gross Sales (All incl) di sheet Tiketcom Detail.
+                    tiketcom_item_summary = (
+                        tiketcom_detail_df
+                        .groupby(['store', 'item'], as_index=False)
+                        .agg({'qty': 'sum', 'gross_all_incl': 'sum'})
+                        .rename(columns={'gross_all_incl': 'sales'})
+                    )
+                    tiketcom_item_sheet = build_item_summary_sheet(
+                        tiketcom_item_summary.to_dict('records'),
+                        'Item Summary Tiket.com', period_str)
+                    tiketcom_item_sheet.to_excel(
+                        writer, sheet_name='Item Summary Tiket.com',
+                        index=False, header=False)
 
             # ===== NEW TIKET.COM REPORT SHEET (from new_tiket_transactions) =====
             if 'newtiketcom' in report_list:
@@ -3921,6 +4344,22 @@ async def get_combined_report(
                     detail_sheet.to_excel(writer, sheet_name='New Tiketcom', index=False, header=False)
                     sheets_written = True
 
+                    # ===== ALL TRANSACTION TIKET.COM ITEM SUMMARY =====
+                    # Item = Package (sama dengan kolom Package di sheet detail),
+                    # Sales = Gross Sales sebelum diskon.
+                    new_item_summary = (
+                        new_tiket_detail_df
+                        .groupby(['store', 'package'], as_index=False)
+                        .agg({'qty': 'sum', 'gross_sales': 'sum'})
+                        .rename(columns={'package': 'item', 'gross_sales': 'sales'})
+                    )
+                    new_item_sheet = build_item_summary_sheet(
+                        new_item_summary.to_dict('records'),
+                        'Item Summary All Transaction Tiket.com', period_str)
+                    new_item_sheet.to_excel(
+                        writer, sheet_name='Item Summary All Txn Tiket.com',
+                        index=False, header=False)
+
             # Sheet 'Info': catatan sheet yang dilewati + fallback kalau tidak ada
             # sheet sama sekali yang bisa dibuat.
             if skipped_reports or not sheets_written:
@@ -3987,13 +4426,21 @@ async def get_tiketcom_report(
                 'gross_all_incl': float(row['gross_sales_all_incl']),
             }
 
+        # Filter item mengikuti isi tiketcom_price_list (sama seperti di
+        # combined-report): item baru tidak selalu berawalan 'TIK-'.
+        if price_lookup:
+            item_filter = " OR ".join(["item LIKE %s"] * len(price_lookup))
+            item_params = [p + "%" for p in price_lookup.keys()]
+        else:
+            item_filter = "FALSE"
+            item_params = []
+
         # Query POS for tiket.com items
-        base_where = """
-            (LOWER(item) LIKE '%%tiket%%com%%' OR LOWER(item) LIKE '%%tiket.com%%')
-            AND item LIKE 'TIK-%%'
+        base_where = f"""
+            ({item_filter})
             AND business_date >= %s AND business_date <= %s
         """
-        params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        params = item_params + [start_date + " 00:00:00", end_date + " 23:59:59"]
         if outlet:
             base_where += " AND outlet IN %s"
             params.append(tuple(outlet))
@@ -4164,13 +4611,23 @@ async def get_ota_report(
                 'gross_all_incl': float(row['gross_sales_all_incl']),
             }
 
-        # Build platform conditions
+        # Build platform conditions. Tiket.com memakai daftar pattern dari
+        # ota_price_list karena sejak Okt 2026 ada item tanpa prefix 'TIK-'
+        # (Pup-tastic Dessert Treat, Yum-Yum Bonus).
         platform_conditions = []
+        platform_params = []
         platform_list = platform if platform else ['tiketcom', 'blibli', 'website']
 
         for plat in platform_list:
             if plat == 'tiketcom':
-                platform_conditions.append("item LIKE 'TIK-%%'")
+                tiketcom_patterns = [pattern for (p, pattern) in price_lookup if p == 'tiketcom']
+                if tiketcom_patterns:
+                    platform_conditions.append(
+                        "(" + " OR ".join(["item LIKE %s"] * len(tiketcom_patterns)) + ")"
+                    )
+                    platform_params.extend(pattern + "%" for pattern in tiketcom_patterns)
+                else:
+                    platform_conditions.append("item LIKE 'TIK-%%'")
             elif plat == 'blibli':
                 platform_conditions.append("item LIKE 'BLI-%%'")
             elif plat == 'website':
@@ -4200,7 +4657,7 @@ async def get_ota_report(
             {platform_where}
             AND business_date >= %s AND business_date <= %s
         """
-        params = [start_date + " 00:00:00", end_date + " 23:59:59"]
+        params = platform_params + [start_date + " 00:00:00", end_date + " 23:59:59"]
         if outlet:
             base_where += " AND outlet IN %s"
             params.append(tuple(outlet))
@@ -4261,6 +4718,11 @@ async def get_ota_report(
                 return 'blibli'
             elif item.startswith('WEB-'):
                 return 'website'
+            # Item tiket.com baru tidak berawalan TIK-, jadi fallback ke
+            # daftar pattern per platform di ota_price_list.
+            for (p, pattern) in price_lookup.keys():
+                if item.startswith(pattern):
+                    return p
             return None
 
         def get_price_for_item(item, plat):
@@ -4383,7 +4845,7 @@ async def get_jmh_reconciliation(
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
     outlet: Optional[str] = Query(None, description="Optional outlet filter: SNP or CPP"),
 ):
-    """JMH Retail Reconciliation: POS Retail vs Bank (BCA JMH + BRI JMH) per date."""
+    """JMH Retail Reconciliation: POS Retail vs Bank (BCA JMH + BRI JMH + BNI JMH) per date."""
     try:
         ck = cache_key("jmh-reconciliation", start_date, end_date, outlet)
         cached = get_cached(ck)
@@ -4460,6 +4922,27 @@ async def get_jmh_reconciliation(
         """
         bri_df = pd.read_sql(bri_query, conn, params=bri_params)
 
+        # BNI JMH daily total - RETAIL merchants only (MERCH)
+        bni_where = """
+            trx_date IS NOT NULL AND trx_date >= %s AND trx_date <= %s
+            AND merchant_name ILIKE '%%MERCH%%'
+            AND (merchant_name ILIKE '%%SPARK%%' OR merchant_name ILIKE '%%CTZ%%')
+        """
+        bni_params = [start_date, end_date]
+
+        if outlet == "SNP":
+            bni_where += " AND merchant_name ILIKE '%%SPARK%%'"
+        elif outlet == "CPP":
+            bni_where += " AND merchant_name ILIKE '%%CTZ%%'"
+
+        bni_query = f"""
+            SELECT trx_date as date, SUM(amount) as bni
+            FROM bni_jmh_transactions
+            WHERE {bni_where}
+            GROUP BY trx_date ORDER BY date
+        """
+        bni_df = pd.read_sql(bni_query, conn, params=bni_params)
+
         conn.close()
 
         # Handle empty DataFrames
@@ -4469,6 +4952,8 @@ async def get_jmh_reconciliation(
             bca_df['date'] = pd.to_datetime(bca_df['date'])
         if not bri_df.empty:
             bri_df['date'] = pd.to_datetime(bri_df['date'])
+        if not bni_df.empty:
+            bni_df['date'] = pd.to_datetime(bni_df['date'])
 
         date_range = pd.date_range(start=start_date, end=end_date)
         result_df = pd.DataFrame({'date': date_range})
@@ -4476,18 +4961,19 @@ async def get_jmh_reconciliation(
         result_df = result_df.merge(pos_df, on='date', how='left') if not pos_df.empty else result_df.assign(pos=0.0)
         result_df = result_df.merge(bca_df, on='date', how='left') if not bca_df.empty else result_df.assign(bca=0.0)
         result_df = result_df.merge(bri_df, on='date', how='left') if not bri_df.empty else result_df.assign(bri=0.0)
+        result_df = result_df.merge(bni_df, on='date', how='left') if not bni_df.empty else result_df.assign(bni=0.0)
 
         # Ensure all columns exist
-        for col in ['pos', 'bca', 'bri']:
+        for col in ['pos', 'bca', 'bri', 'bni']:
             if col not in result_df.columns:
                 result_df[col] = 0.0
 
         result_df = result_df.fillna(0)
-        result_df['bank_total'] = result_df['bca'] + result_df['bri']
+        result_df['bank_total'] = result_df['bca'] + result_df['bri'] + result_df['bni']
         result_df['difference'] = result_df['bank_total'] - result_df['pos']
         result_df['date'] = result_df['date'].dt.strftime('%Y-%m-%d')
 
-        for col in ['pos', 'bca', 'bri', 'bank_total', 'difference']:
+        for col in ['pos', 'bca', 'bri', 'bni', 'bank_total', 'difference']:
             result_df[col] = result_df[col].astype(float)
 
         result_df = result_df[(result_df['pos'] > 0) | (result_df['bank_total'] > 0)]
@@ -4499,6 +4985,7 @@ async def get_jmh_reconciliation(
                 "pos": float(result_df['pos'].sum()),
                 "bca": float(result_df['bca'].sum()),
                 "bri": float(result_df['bri'].sum()),
+                "bni": float(result_df['bni'].sum()),
                 "bank_total": float(result_df['bank_total'].sum()),
                 "difference": float(result_df['difference'].sum()),
             }

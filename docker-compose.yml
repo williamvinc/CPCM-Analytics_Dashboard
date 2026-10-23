@@ -36,6 +36,11 @@ services:
       - DB_USER=mooboard
       - DB_PASSWORD=MooBoard123!
       - REDIS_URL=redis://redis:6379
+      # Nusapay diambil dari tabel nusapay_transactions (file merchant) untuk
+      # periode ini, bukan dari tender POS. Beberapa rentang dipisah koma.
+      # Rollback ke POS: kosongkan nilainya jadi NUSAPAY_DARI_TABEL= lalu
+      # `docker compose up -d backend`.
+      - NUSAPAY_DARI_TABEL=2026-08-01:2026-08-31,2026-09-01:2026-09-30
     depends_on:
       - redis
     restart: unless-stopped
@@ -44,7 +49,10 @@ services:
     image: redis:7-alpine
     command: redis-server --maxmemory 2gb --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      # HANYA localhost. Backend mengakses lewat jaringan compose (redis:6379),
+      # jadi publish ke 0.0.0.0 tidak diperlukan. Sebelumnya terbuka ke internet
+      # dan diserang 2-11 Okt 2026 (SLAVEOF ke master jahat + MODULE LOAD exp.so).
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
