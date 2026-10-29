@@ -4360,6 +4360,322 @@ async def get_combined_report(
                         writer, sheet_name='Item Summary All Txn Tiket.com',
                         index=False, header=False)
 
+            # ===== WEBSITE VOUCHER REPORT SHEET =====
+            # Validasi input POS terhadap voucher yang dibeli online. Sisi website
+            # dari tabel web_voucher_redemptions (import export "Redemption record
+            # data"), sisi POS dari item WEB-* yang dicatat harga 0 saat redeem.
+            # Pembandingnya JAM BERMAIN, bukan rupiah: uangnya masuk saat pembelian
+            # online, jadi bill POS-nya selalu nol. Tiket POS 2 Jam = 2 jam,
+            # 3 Jam = 3 jam; produk website "untuk 1 jam" / "untuk 2 jam" juga
+            # dihitung per jam.
+            if 'webvoucher' in report_list:
+                web_voucher_df = pd.read_sql(
+                    """
+                    SELECT redemption_time, shop, product_name, face_value, true_value
+                    FROM web_voucher_redemptions
+                    WHERE redemption_time >= %s AND redemption_time <= %s
+                    ORDER BY redemption_time
+                    """,
+                    conn, params=ts_params,
+                )
+
+                if web_voucher_df.empty:
+                    skipped_reports.append(
+                        ('Website Voucher', 'Belum ada data website untuk periode ini'))
+                else:
+                    def outlet_for_shop(shop):
+                        if 'carstensz' in str(shop).lower():
+                            return 'OUTLET02-Nickelodeon Theme Park Carstensz Mall'
+                        return 'OUTLET01-Park Nickelodeon'
+
+                    web_voucher_df['redemption_time'] = pd.to_datetime(web_voucher_df['redemption_time'])
+                    web_voucher_df['date'] = web_voucher_df['redemption_time'].dt.date
+                    web_voucher_df['store'] = web_voucher_df['shop'].map(outlet_for_shop)
+
+                    product_lower = web_voucher_df['product_name'].fillna('').astype(str).str.lower()
+                    web_voucher_df['hours'] = 0
+                    web_voucher_df.loc[product_lower.str.contains('untuk 1 jam'), 'hours'] = 1
+                    web_voucher_df.loc[product_lower.str.contains('untuk 2 jam'), 'hours'] = 2
+                    web_voucher_df['socks'] = product_lower.str.contains('kaos kaki').astype(int)
+
+                    if outlet_list:
+                        web_voucher_df = web_voucher_df[web_voucher_df['store'].isin(outlet_list)]
+
+                    # Cakupan file website biasanya lebih pendek dari periode yang
+                    # dipilih, jadi perbandingan dibatasi ke tanggal yang ada
+                    # datanya. Tanpa ini tanggal di luar file akan tampil sebagai
+                    # "NO WEBSITE" padahal cuma file-nya belum mencakup.
+                    if web_voucher_df.empty:
+                        # Ada data website di periode ini, tapi tidak ada untuk
+                        # outlet yang dipilih. POS tetap ditampilkan supaya
+                        # kelihatan kalau vouchernya tidak tercatat di website.
+                        web_start = pd.to_datetime(start_date).date()
+                        web_end = pd.to_datetime(end_date).date()
+                    else:
+                        web_start = web_voucher_df['date'].min()
+                        web_end = web_voucher_df['date'].max()
+
+                    pos_web_query = f"""
+                        SELECT business_date::date AS date, bill_no, outlet,
+                               MIN(bill_created_date) AS created,
+                               SUM(CASE WHEN item ILIKE 'WEB-%%02J%%' THEN item_qty ELSE 0 END) AS j2,
+                               SUM(CASE WHEN item ILIKE 'WEB-%%03J%%' THEN item_qty ELSE 0 END) AS j3,
+                               SUM(CASE WHEN item ILIKE 'RTL-SOC%%' THEN item_qty ELSE 0 END) AS socks
+                        FROM pos_sales
+                        WHERE business_date >= %s AND business_date <= %s
+                          AND bill_no IN (
+                              SELECT bill_no FROM pos_sales
+                              WHERE item ILIKE 'WEB-%%'
+                                AND business_date >= %s AND business_date <= %s
+                          )
+                          {outlet_filter_sql}
+                        GROUP BY 1, 2, 3
+                    """
+                    pos_web_params = [
+                        str(web_start) + " 00:00:00", str(web_end) + " 23:59:59",
+                        str(web_start) + " 00:00:00", str(web_end) + " 23:59:59",
+                    ] + outlet_params
+                    pos_web_df = pd.read_sql(pos_web_query, conn, params=pos_web_params)
+
+                    if not pos_web_df.empty:
+                        pos_web_df['hours'] = pos_web_df['j2'].fillna(0) * 2 + pos_web_df['j3'].fillna(0) * 3
+                        pos_web_df['socks'] = pos_web_df['socks'].fillna(0)
+                        pos_web_df['created'] = pd.to_datetime(pos_web_df['created'])
+                        pos_web_df['store'] = pos_web_df['outlet'].map(
+                            lambda o: 'OUTLET01-Park Nickelodeon'
+                            if str(o).startswith('SNP-Senayan') else o)
+
+                    web_events = (
+                        web_voucher_df
+                        .groupby(['date', 'store', 'redemption_time'], as_index=False)
+                        .agg(hours=('hours', 'sum'), socks=('socks', 'sum'),
+                             face=('face_value', 'sum'), true=('true_value', 'sum'))
+                    )
+
+                    # Jam di website berjalan ~60 menit lebih maju daripada
+                    # bill_created_date POS, jadi digeser dulu sebelum dicari
+                    # pasangan terdekat.
+                    time_shift = pd.Timedelta(minutes=60)
+
+                    pairs_per_day = []
+                    days = {(d, s) for d, s in web_events[['date', 'store']].itertuples(index=False)}
+                    if not pos_web_df.empty:
+                        days |= {(d, s) for d, s in pos_web_df[['date', 'store']].itertuples(index=False)}
+
+                    for date_val, store_val in sorted(days, key=lambda k: (k[0], str(k[1]))):
+                        web_rows = web_events[
+                            (web_events['date'] == date_val) & (web_events['store'] == store_val)
+                        ].sort_values('redemption_time').to_dict('records')
+                        pos_rows = []
+                        if not pos_web_df.empty:
+                            pos_rows = pos_web_df[
+                                (pos_web_df['date'] == date_val) & (pos_web_df['store'] == store_val)
+                            ].sort_values('created').to_dict('records')
+
+                        used = set()
+                        day_pairs = []
+                        # Pass 1: utamakan pasangan dengan jam bermain sama,
+                        # pilih yang waktunya paling dekat setelah digeser.
+                        for web_row in web_rows:
+                            target = web_row['redemption_time'] - time_shift
+                            candidates = [
+                                i for i, pos_row in enumerate(pos_rows)
+                                if i not in used and pos_row['hours'] == web_row['hours']
+                            ]
+                            if candidates:
+                                best = min(
+                                    candidates,
+                                    key=lambda i: abs((pos_rows[i]['created'] - target).total_seconds()),
+                                )
+                                used.add(best)
+                                day_pairs.append((web_row, pos_rows[best]))
+                            else:
+                                day_pairs.append((web_row, None))
+                        # Pass 2: sisa bill POS tetap ditampilkan walau jamnya
+                        # tidak ada yang sama, supaya selisihnya kelihatan.
+                        for i, pos_row in enumerate(pos_rows):
+                            if i not in used:
+                                day_pairs.append((None, pos_row))
+                        pairs_per_day.append((date_val, store_val, day_pairs))
+
+                    voucher_detail_rows = []
+                    for date_val, store_val, day_pairs in pairs_per_day:
+                        for web_row, pos_row in day_pairs:
+                            if web_row is None:
+                                website_time = ''
+                                pos_time = pos_row['created'].strftime('%H:%M')
+                                bill_no = pos_row['bill_no']
+                                web_hours = 0
+                                pos_hours = int(pos_row['hours'])
+                                web_socks = 0
+                                pos_socks = int(pos_row['socks'])
+                                face = 0
+                                true = 0
+                                status = 'NO WEBSITE'
+                                sort_time = pos_row['created']
+                            else:
+                                website_time = web_row['redemption_time'].strftime('%H:%M')
+                                web_hours = int(web_row['hours'])
+                                web_socks = int(web_row['socks'])
+                                face = float(web_row['face']) if pd.notna(web_row['face']) else 0.0
+                                true = float(web_row['true']) if pd.notna(web_row['true']) else 0.0
+                                sort_time = web_row['redemption_time']
+                                if pos_row is None:
+                                    pos_time = ''
+                                    bill_no = ''
+                                    pos_hours = 0
+                                    pos_socks = 0
+                                    status = 'NO POS'
+                                else:
+                                    pos_time = pos_row['created'].strftime('%H:%M')
+                                    bill_no = pos_row['bill_no']
+                                    pos_hours = int(pos_row['hours'])
+                                    pos_socks = int(pos_row['socks'])
+                                    if web_hours == pos_hours and web_socks == pos_socks:
+                                        status = 'OK'
+                                    else:
+                                        status = 'DIFF'
+
+                            voucher_detail_rows.append({
+                                'date': date_val,
+                                'store': store_val,
+                                'website_time': website_time,
+                                'pos_time': pos_time,
+                                'bill_no': bill_no,
+                                'web_hours': web_hours,
+                                'pos_hours': pos_hours,
+                                'web_socks': web_socks,
+                                'pos_socks': pos_socks,
+                                'face': face,
+                                'true': true,
+                                'status': status,
+                                'sort_time': sort_time,
+                            })
+
+                    voucher_detail_rows.sort(
+                        key=lambda r: (r['date'], str(r['store']), r['sort_time']))
+
+                    if voucher_detail_rows:
+                        detail_header = [
+                            'Date', 'Store', 'Waktu Website', 'Waktu POS', 'POS Bill',
+                            'Jam Web', 'Jam POS', 'Selisih Jam',
+                            'Kaos Kaki Web', 'Kaos Kaki POS',
+                            'Face Value', 'True Value', 'Status',
+                        ]
+                        detail_sheet_rows = [
+                            ['WEBSITE VOUCHER REPORT - DETAIL'] + [None] * (len(detail_header) - 1),
+                            ['Periode :', period_str] + [None] * (len(detail_header) - 2),
+                            ['Data website :', f"{web_start} s/d {web_end}"] + [None] * (len(detail_header) - 2),
+                            [None] * len(detail_header),
+                            detail_header,
+                        ]
+                        for row in voucher_detail_rows:
+                            detail_sheet_rows.append([
+                                row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else row['date'],
+                                row['store'],
+                                row['website_time'],
+                                row['pos_time'],
+                                row['bill_no'],
+                                row['web_hours'],
+                                row['pos_hours'],
+                                row['web_hours'] - row['pos_hours'],
+                                row['web_socks'],
+                                row['pos_socks'],
+                                int(round(row['face'])),
+                                int(round(row['true'])),
+                                row['status'],
+                            ])
+
+                        # Catatan supaya selisih 1 jam antara Waktu Website dan
+                        # Waktu POS tidak dikira salah input.
+                        detail_sheet_rows.append([None] * len(detail_header))
+                        detail_sheet_rows.append([
+                            'Catatan :',
+                            'Waktu website berjalan ~60 menit lebih maju dari jam POS (beda zona waktu).',
+                        ])
+                        detail_sheet_rows.append([
+                            '',
+                            'Status DIFF = jumlah jam bermain atau kaos kaki berbeda dengan website.',
+                        ])
+
+                        pd.DataFrame(detail_sheet_rows).to_excel(
+                            writer, sheet_name='Website Voucher Detail',
+                            index=False, header=False)
+                        sheets_written = True
+
+                        # === Rekapitulasi per hari x toko ===
+                        rekap = {}
+                        for row in voucher_detail_rows:
+                            key = (row['date'], row['store'])
+                            acc = rekap.setdefault(key, {
+                                'web_visits': 0, 'pos_visits': 0,
+                                'web_hours': 0, 'pos_hours': 0,
+                                'web_socks': 0, 'pos_socks': 0,
+                                'face': 0.0, 'true': 0.0, 'bad': 0,
+                            })
+                            if row['status'] != 'NO WEBSITE':
+                                acc['web_visits'] += 1
+                                acc['web_socks'] += row['web_socks']
+                                acc['face'] += row['face']
+                                acc['true'] += row['true']
+                            if row['status'] != 'NO POS':
+                                acc['pos_visits'] += 1
+                                acc['pos_socks'] += row['pos_socks']
+                            acc['web_hours'] += row['web_hours']
+                            acc['pos_hours'] += row['pos_hours']
+                            if row['status'] != 'OK':
+                                acc['bad'] += 1
+
+                        rekap_header = [
+                            'Date', 'Store', 'Kunjungan Web', 'Kunjungan POS',
+                            'Jam Web', 'Jam POS', 'Selisih Jam',
+                            'Kaos Kaki Web', 'Kaos Kaki POS',
+                            'Face Value', 'True Value', 'Status',
+                        ]
+                        rekap_rows = [
+                            ['WEBSITE VOUCHER REPORT - REKAPITULASI'] + [None] * (len(rekap_header) - 1),
+                            ['Periode :', period_str] + [None] * (len(rekap_header) - 2),
+                            ['Data website :', f"{web_start} s/d {web_end}"] + [None] * (len(rekap_header) - 2),
+                            [None] * len(rekap_header),
+                            rekap_header,
+                        ]
+                        totals = {
+                            'web_visits': 0, 'pos_visits': 0, 'web_hours': 0, 'pos_hours': 0,
+                            'web_socks': 0, 'pos_socks': 0, 'face': 0.0, 'true': 0.0,
+                        }
+                        for (date_val, store_val), acc in sorted(rekap.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+                            rekap_rows.append([
+                                date_val.strftime('%Y-%m-%d') if hasattr(date_val, 'strftime') else date_val,
+                                store_val,
+                                acc['web_visits'],
+                                acc['pos_visits'],
+                                acc['web_hours'],
+                                acc['pos_hours'],
+                                acc['web_hours'] - acc['pos_hours'],
+                                acc['web_socks'],
+                                acc['pos_socks'],
+                                int(round(acc['face'])),
+                                int(round(acc['true'])),
+                                'OK' if acc['bad'] == 0 else 'DIFF',
+                            ])
+                            for key in totals:
+                                totals[key] += acc[key]
+
+                        rekap_rows.append([None] * len(rekap_header))
+                        rekap_rows.append([
+                            None, 'TOTAL',
+                            totals['web_visits'], totals['pos_visits'],
+                            totals['web_hours'], totals['pos_hours'],
+                            totals['web_hours'] - totals['pos_hours'],
+                            totals['web_socks'], totals['pos_socks'],
+                            int(round(totals['face'])), int(round(totals['true'])),
+                            '',
+                        ])
+
+                        pd.DataFrame(rekap_rows).to_excel(
+                            writer, sheet_name='Website Voucher Rekapitulasi',
+                            index=False, header=False)
+
             # Sheet 'Info': catatan sheet yang dilewati + fallback kalau tidak ada
             # sheet sama sekali yang bisa dibuat.
             if skipped_reports or not sheets_written:

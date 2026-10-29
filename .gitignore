@@ -44,3 +44,6 @@ next-env.d.ts
 backend/venv/
 backend/.venv/
 backend/__pycache__/
+
+# data pelanggan dari mitra (ada nomor HP member) — jangan ikut ke repo
+examples/nick.xlsx

@@ -16,7 +16,7 @@ import { PlusCircle, Download, Loader2, Store } from "lucide-react"
 import { DateRangePicker } from "@/components/ui/date-range-picker"
 import { DateRange } from "react-day-picker"
 
-type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'newsales' | 'fnbmerchant' | 'activity' | 'activitymerchant' | 'tiketcom' | 'newtiketcom'
+type ReportType = 'sales' | 'discount' | 'merchant' | 'cafe' | 'newsales' | 'fnbmerchant' | 'activity' | 'activitymerchant' | 'tiketcom' | 'newtiketcom' | 'webvoucher'
 
 interface ReportOption {
   id: ReportType
@@ -40,6 +40,7 @@ const REPORT_OPTIONS: ReportOption[] = [
   { id: 'activitymerchant', label: 'Activity Merchant Report', description: 'Activity settlement per merchant (BRI, BCA, Nusapay, Deposit) with MDR' },
   { id: 'tiketcom', label: 'Tiket.com POS Report', description: 'Tiket.com sales with calculated prices (detail + rekap)' },
   { id: 'newtiketcom', label: 'All Transaction Tiket.com Report', description: 'New Tiket.com from new_tiket_transactions (with status)' },
+  { id: 'webvoucher', label: 'Website Voucher Report', description: 'Validasi POS vs voucher website (jam bermain, jumlah kunjungan, kaos kaki)' },
 ]
 
 const ALL_OUTLETS = '__all__'
@@ -54,7 +55,7 @@ export function QuickExport() {
   const prevMonthEnd = new Date(today.getFullYear(), today.getMonth(), 0)
 
   const [open, setOpen] = React.useState(false)
-  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom'])
+  const [selectedReports, setSelectedReports] = React.useState<ReportType[]>(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom', 'webvoucher'])
   const [loading, setLoading] = React.useState(false)
   const [dateRange, setDateRange] = React.useState<DateRange | undefined>({
     from: prevMonthStart,
@@ -154,7 +155,7 @@ export function QuickExport() {
     if (selectedChannel === 'retail_jmh') {
       setSelectedReports(['sales', 'discount', 'merchant'])
     } else {
-      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom'])
+      setSelectedReports(['sales', 'discount', 'merchant', 'cafe', 'newsales', 'fnbmerchant', 'activity', 'activitymerchant', 'tiketcom', 'newtiketcom', 'webvoucher'])
     }
   }
 
